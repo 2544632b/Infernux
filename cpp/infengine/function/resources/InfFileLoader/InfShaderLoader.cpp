@@ -1,0 +1,1249 @@
+#include "InfShaderLoader.hpp"
+
+#include <SPIRV/GlslangToSpv.h>
+#include <glslang/Public/ShaderLang.h>
+
+#include <algorithm>
+#include <core/log/InfLog.h>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
+
+namespace infengine
+{
+
+// Static members
+std::vector<std::string> InfShaderLoader::s_additionalSearchPaths;
+std::unordered_map<std::string, std::string> InfShaderLoader::s_templateCache;
+std::unordered_map<std::string, ShaderDescriptor> InfShaderLoader::s_shadingModelCache;
+std::unordered_map<std::string, std::vector<char>> InfShaderLoader::s_shadowVariantCache;
+std::unordered_map<std::string, std::vector<char>> InfShaderLoader::s_shadowVertexVariantCache;
+std::unordered_map<std::string, std::vector<char>> InfShaderLoader::s_gbufferVariantCache;
+std::string InfShaderLoader::s_lastCompileError;
+std::unordered_map<std::string, std::unordered_map<std::string, std::string>> InfShaderLoader::s_shaderIdMapCache;
+
+void InfShaderLoader::AddShaderSearchPath(const std::string &dir)
+{
+    // Avoid duplicates
+    for (const auto &existing : s_additionalSearchPaths) {
+        if (existing == dir)
+            return;
+    }
+    s_additionalSearchPaths.push_back(dir);
+    INFLOG_INFO("Shader search path added: ", dir);
+}
+
+InfShaderLoader::InfShaderLoader(bool generateDebugInfo, bool stripDebugInfo, bool disableOptimizer, bool optimizeSize,
+                                 bool disassemble, bool validate, bool emitNonSemanticShaderDebugInfo,
+                                 bool emitNonSemanticShaderDebugSource, bool compileOnly,
+                                 bool optimizerAllowExpandedIDBound)
+{
+    // Initialize the glslang library and set options
+    glslang::InitializeProcess();
+    m_options.generateDebugInfo = generateDebugInfo;
+    m_options.stripDebugInfo = stripDebugInfo;
+    m_options.disableOptimizer = disableOptimizer;
+    m_options.optimizeSize = optimizeSize;
+    m_options.disassemble = disassemble;
+    m_options.validate = validate;
+    m_options.emitNonSemanticShaderDebugInfo = emitNonSemanticShaderDebugInfo;
+    m_options.emitNonSemanticShaderDebugSource = emitNonSemanticShaderDebugSource;
+    m_options.compileOnly = compileOnly;
+    m_options.optimizerAllowExpandedIDBound = optimizerAllowExpandedIDBound;
+
+    // Initialize built-in resources
+    InitGLSLBuiltResources();
+}
+
+void InfShaderLoader::SetShaderCompilerOptions(const std::string &prop, bool value)
+{
+    if (prop == "generateDebugInfo") {
+        m_options.generateDebugInfo = value;
+    } else if (prop == "stripDebugInfo") {
+        m_options.stripDebugInfo = value;
+    } else if (prop == "disableOptimizer") {
+        m_options.disableOptimizer = value;
+    } else if (prop == "optimizeSize") {
+        m_options.optimizeSize = value;
+    } else if (prop == "disassemble") {
+        m_options.disassemble = value;
+    } else if (prop == "validate") {
+        m_options.validate = value;
+    } else if (prop == "emitNonSemanticShaderDebugInfo") {
+        m_options.emitNonSemanticShaderDebugInfo = value;
+    } else if (prop == "emitNonSemanticShaderDebugSource") {
+        m_options.emitNonSemanticShaderDebugSource = value;
+    } else if (prop == "compileOnly") {
+        m_options.compileOnly = value;
+    } else if (prop == "optimizerAllowExpandedIDBound") {
+        m_options.optimizerAllowExpandedIDBound = value;
+    }
+}
+
+bool InfShaderLoader::LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData)
+{
+    INFLOG_DEBUG("Loading shader with metadata from file: ", filePath);
+    // not implemented yet.
+    return false;
+}
+
+void InfShaderLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
+                                 InfResourceMeta &metaData)
+{
+    if (!content) {
+        INFLOG_ERROR("Invalid shader content for metadata creation");
+        return;
+    }
+    metaData.Init(content, contentSize, filePath, ResourceType::Shader);
+
+    // Parse shader into structured descriptor (single pass)
+    auto desc = ParseShaderSource(std::string(content, contentSize), filePath);
+
+    // ----------------------------------------------------------------
+    // Phase 4: Apply Surface Options defaults
+    // @surface_type determines default render state when user hasn't
+    // explicitly overridden individual settings.
+    // ----------------------------------------------------------------
+    if (desc.surfaceOptions.surfaceType == "transparent") {
+        if (desc.renderQueue < 0)
+            desc.renderQueue = 3000;
+        if (desc.surfaceOptions.blendMode == "off")
+            desc.surfaceOptions.blendMode = "alpha";
+        if (desc.depthWrite.empty())
+            desc.depthWrite = "off";
+        if (desc.passTag.empty())
+            desc.passTag = "transparent";
+    } else {
+        // opaque defaults
+        if (desc.renderQueue < 0)
+            desc.renderQueue = 2000;
+        if (desc.passTag.empty())
+            desc.passTag = "opaque";
+    }
+
+    // Determine shader type from file extension
+    std::string type = "vertex";
+    if (desc.fileExtension == ".frag")
+        type = "fragment";
+    else if (desc.fileExtension == ".geom")
+        type = "geometry";
+    else if (desc.fileExtension == ".comp")
+        type = "compute";
+    else if (desc.fileExtension == ".tesc")
+        type = "tess_control";
+    else if (desc.fileExtension == ".tese")
+        type = "tess_evaluation";
+    metaData.AddMetadata("type", type);
+
+    // Build properties JSON from descriptor
+    std::string propertiesJson = "[]";
+    if (!desc.properties.empty() || !desc.textureProperties.empty()) {
+        std::ostringstream jsonStream;
+        jsonStream << "[";
+        bool first = true;
+        auto emitProperty = [&](const ShaderProperty &prop) {
+            if (!first)
+                jsonStream << ",";
+            first = false;
+            if (prop.isTexture) {
+                jsonStream << "{\"name\":\"" << prop.name << "\",\"type\":\"" << prop.type << "\",\"default\":\""
+                           << prop.textureDefault << "\"}";
+            } else {
+                jsonStream << "{\"name\":\"" << prop.name << "\",\"type\":\"" << prop.type
+                           << "\",\"default\":" << prop.defaultValue << "}";
+            }
+        };
+        for (const auto &p : desc.properties)
+            emitProperty(p);
+        for (const auto &p : desc.textureProperties)
+            emitProperty(p);
+        jsonStream << "]";
+        propertiesJson = jsonStream.str();
+    }
+
+    metaData.AddMetadata("shader_id", desc.shaderId);
+    metaData.AddMetadata("properties", propertiesJson);
+    metaData.AddMetadata("shader_lighting_type", desc.shadingModel.empty() ? "unlit" : desc.shadingModel);
+    metaData.AddMetadata("shader_cull_mode", desc.surfaceOptions.cullMode);
+    metaData.AddMetadata("shader_depth_write", desc.depthWrite);
+    metaData.AddMetadata("shader_depth_test", desc.depthTest);
+    metaData.AddMetadata("shader_blend", desc.surfaceOptions.blendMode == "off" ? "" : desc.surfaceOptions.blendMode);
+    metaData.AddMetadata("shader_queue", desc.renderQueue);
+    metaData.AddMetadata("shader_pass_tag", desc.passTag);
+    metaData.AddMetadata("shader_stencil", desc.stencil);
+    metaData.AddMetadata("shader_hidden", desc.hidden);
+    metaData.AddMetadata("shader_alpha_test",
+                         desc.surfaceOptions.alphaClip == "off" ? "" : desc.surfaceOptions.alphaClip);
+    metaData.AddMetadata("shader_surface_type", desc.surfaceOptions.surfaceType);
+    metaData.AddMetadata("shader_receive_shadows", desc.surfaceOptions.receiveShadows);
+    metaData.AddMetadata("shader_cast_shadows", desc.surfaceOptions.castShadows);
+
+    INFLOG_DEBUG("Shader metadata created - type: ", type, ", shader_id: ", desc.shaderId,
+                 ", lighting_type: ", desc.shadingModel, ", properties: ", propertiesJson, " for file: ", filePath);
+}
+
+// ============================================================================
+// ParseAnnotation — unified single-line annotation parser
+// ============================================================================
+
+std::optional<std::pair<std::string, std::string>> InfShaderLoader::ParseAnnotation(const std::string &line)
+{
+    // Find the effective start (skip leading whitespace and optional "// " prefix)
+    size_t pos = line.find_first_not_of(" \t");
+    if (pos == std::string::npos)
+        return std::nullopt;
+
+    std::string trimmed = line.substr(pos);
+
+    // Handle "// @key: value" format (already-commented annotations)
+    if (trimmed.rfind("// @", 0) == 0) {
+        trimmed = trimmed.substr(3); // skip "// "
+    }
+
+    // Must start with '@'
+    if (trimmed.empty() || trimmed[0] != '@')
+        return std::nullopt;
+
+    // Find colon separator
+    size_t colonPos = trimmed.find(':');
+
+    // Handle annotations without value (e.g. "@hidden")
+    if (colonPos == std::string::npos) {
+        std::string key = trimmed.substr(1); // skip '@'
+        // Trim trailing whitespace from key
+        size_t keyEnd = key.find_last_not_of(" \t\r\n");
+        if (keyEnd != std::string::npos)
+            key = key.substr(0, keyEnd + 1);
+        return std::make_pair(key, std::string{});
+    }
+
+    // Extract key (between '@' and ':')
+    std::string key = trimmed.substr(1, colonPos - 1);
+    size_t keyEnd = key.find_last_not_of(" \t");
+    if (keyEnd != std::string::npos)
+        key = key.substr(0, keyEnd + 1);
+
+    // Extract value (after ':')
+    std::string value = trimmed.substr(colonPos + 1);
+    size_t valStart = value.find_first_not_of(" \t");
+    size_t valEnd = value.find_last_not_of(" \t\r\n");
+    if (valStart != std::string::npos && valEnd != std::string::npos)
+        value = value.substr(valStart, valEnd - valStart + 1);
+    else
+        value.clear();
+
+    return std::make_pair(key, value);
+}
+
+// ============================================================================
+// ParseShaderSource — build ShaderDescriptor from raw source text
+// ============================================================================
+
+ShaderDescriptor InfShaderLoader::ParseShaderSource(const std::string &source, const std::string &filePath) const
+{
+    ShaderDescriptor desc;
+    desc.filePath = filePath;
+
+    // Infer stage from file extension
+    if (!filePath.empty()) {
+        desc.fileExtension = std::filesystem::path(filePath).extension().string();
+        desc.isVertexShader = (desc.fileExtension == ".vert");
+        desc.isFragmentShader = (desc.fileExtension == ".frag");
+        desc.isComputeShader = (desc.fileExtension == ".comp");
+        desc.isLibrary = (desc.fileExtension == ".glsl");
+        desc.isShadingModel = (desc.fileExtension == ".shadingmodel");
+
+        // Default shaderId from filename (without extension)
+        std::string filename = std::filesystem::path(filePath).filename().string();
+        size_t dotPos = filename.find_last_of('.');
+        if (dotPos != std::string::npos)
+            desc.shaderId = filename.substr(0, dotPos);
+        else
+            desc.shaderId = filename;
+    }
+
+    // Trim + toLower helper
+    auto toLower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        return s;
+    };
+
+    // Property parser helper
+    auto parseProperty = [&](const std::string &value) {
+        size_t firstComma = value.find(',');
+        size_t secondComma = (firstComma != std::string::npos) ? value.find(',', firstComma + 1) : std::string::npos;
+        if (firstComma == std::string::npos || secondComma == std::string::npos)
+            return;
+
+        auto trim = [](std::string s) {
+            size_t st = s.find_first_not_of(" \t");
+            size_t en = s.find_last_not_of(" \t\r\n");
+            return (st != std::string::npos && en != std::string::npos) ? s.substr(st, en - st + 1) : std::string{};
+        };
+
+        std::string name = trim(value.substr(0, firstComma));
+        std::string propType = trim(value.substr(firstComma + 1, secondComma - firstComma - 1));
+        std::string defaultVal = trim(value.substr(secondComma + 1));
+
+        ShaderProperty prop;
+        prop.name = name;
+        prop.type = propType;
+        prop.defaultValue = defaultVal;
+
+        if (propType == "Texture2D") {
+            prop.isTexture = true;
+            prop.textureDefault = defaultVal;
+            desc.textureProperties.push_back(prop);
+        } else {
+            // Map engine type → GLSL type
+            static const std::unordered_map<std::string, std::string> typeMap = {
+                {"Float4", "vec4"}, {"Color", "vec4"}, {"Float3", "vec3"}, {"Float2", "vec2"},
+                {"Float", "float"}, {"Int", "int"},    {"Mat4", "mat4"},
+            };
+            auto it = typeMap.find(propType);
+            if (it != typeMap.end()) {
+                prop.glslType = it->second;
+                desc.properties.push_back(prop);
+            }
+        }
+    };
+
+    // Current target context (only used for .shadingmodel files)
+    std::string currentTargetName;
+    std::unordered_map<std::string, std::vector<std::string>> targetCodeSections;
+
+    // Annotation dispatch table
+    using Handler = std::function<void(const std::string &)>;
+    std::unordered_map<std::string, Handler> handlers = {
+        {"shading_model",
+         [&](const std::string &v) {
+             desc.shadingModel = toLower(v);
+             desc.hasExplicitType = true;
+         }},
+        {"shader_id", [&](const std::string &v) { desc.shaderId = v; }},
+        {"property", [&](const std::string &v) { parseProperty(v); }},
+        {"cull", [&](const std::string &v) { desc.surfaceOptions.cullMode = toLower(v); }},
+        {"depth_write", [&](const std::string &v) { desc.depthWrite = toLower(v); }},
+        {"depth_test", [&](const std::string &v) { desc.depthTest = toLower(v); }},
+        {"blend", [&](const std::string &v) { desc.surfaceOptions.blendMode = toLower(v); }},
+        {"queue",
+         [&](const std::string &v) {
+             try {
+                 desc.renderQueue = std::stoi(v);
+             } catch (...) {
+             }
+         }},
+        {"pass_tag", [&](const std::string &v) { desc.passTag = toLower(v); }},
+        {"stencil", [&](const std::string &v) { desc.stencil = toLower(v); }},
+        {"hidden", [&](const std::string &) { desc.hidden = true; }},
+        {"alpha_test", [&](const std::string &v) { desc.surfaceOptions.alphaClip = v; }},
+        {"alpha_clip", [&](const std::string &v) { desc.surfaceOptions.alphaClip = v; }},
+        {"surface_type", [&](const std::string &v) { desc.surfaceOptions.surfaceType = toLower(v); }},
+        {"blend_mode", [&](const std::string &v) { desc.surfaceOptions.blendMode = toLower(v); }},
+        {"receive_shadows", [&](const std::string &v) { desc.surfaceOptions.receiveShadows = (toLower(v) != "off"); }},
+        {"cast_shadows", [&](const std::string &v) { desc.surfaceOptions.castShadows = (toLower(v) != "off"); }},
+        {"import", [&](const std::string &v) { desc.imports.push_back(v); }},
+        {"target", [&](const std::string &v) { currentTargetName = toLower(v); }},
+    };
+
+    // Scan source line by line
+    std::istringstream stream(source);
+    std::string line;
+    while (std::getline(stream, line)) {
+        // Check #version
+        size_t start = line.find_first_not_of(" \t");
+        std::string trimmedLine = (start != std::string::npos) ? line.substr(start) : "";
+        if (trimmedLine.rfind("#version", 0) == 0) {
+            desc.versionDirective = line;
+            continue;
+        }
+
+        // Try parsing as annotation
+        auto annotation = ParseAnnotation(line);
+        if (annotation) {
+            auto it = handlers.find(annotation->first);
+            if (it != handlers.end()) {
+                it->second(annotation->second);
+            }
+            continue;
+        }
+
+        // Detect function signatures in code
+        if (trimmedLine.find("void surface(") != std::string::npos)
+            desc.hasSurfaceFunc = true;
+        if (trimmedLine.find("void main(") != std::string::npos || trimmedLine.find("void main (") != std::string::npos)
+            desc.hasMainFunc = true;
+        if (trimmedLine.find("void vertex(") != std::string::npos)
+            desc.hasVertexFunc = true;
+
+        // For .shadingmodel files, collect code into target sections
+        if (desc.isShadingModel && !currentTargetName.empty()) {
+            targetCodeSections[currentTargetName].push_back(line);
+        }
+    }
+
+    // Build target blocks for .shadingmodel files
+    if (desc.isShadingModel) {
+        for (auto &[name, lines] : targetCodeSections) {
+            ShaderDescriptor::TargetBlock block;
+            block.name = name;
+            std::ostringstream codeStream;
+            for (const auto &l : lines)
+                codeStream << l << "\n";
+            block.code = codeStream.str();
+            desc.targets.push_back(std::move(block));
+        }
+    }
+
+    return desc;
+}
+
+// ============================================================================
+// Template loading and placeholder replacement
+// ============================================================================
+
+std::string InfShaderLoader::LoadTemplate(const std::string &templateName)
+{
+    auto it = s_templateCache.find(templateName);
+    if (it != s_templateCache.end())
+        return it->second;
+
+    for (const auto &searchPath : s_additionalSearchPaths) {
+        std::filesystem::path templatePath = std::filesystem::path(searchPath) / "_templates" / templateName;
+        std::error_code ec;
+        if (std::filesystem::exists(templatePath, ec)) {
+            std::ifstream file(templatePath);
+            if (file.is_open()) {
+                std::ostringstream content;
+                content << file.rdbuf();
+                s_templateCache[templateName] = content.str();
+                return s_templateCache[templateName];
+            }
+        }
+    }
+    INFLOG_ERROR("Shader template not found: ", templateName);
+    return "";
+}
+
+void InfShaderLoader::ReplacePlaceholder(std::string &str, const std::string &placeholder,
+                                         const std::string &replacement)
+{
+    size_t pos = 0;
+    while ((pos = str.find(placeholder, pos)) != std::string::npos) {
+        str.replace(pos, placeholder.length(), replacement);
+        pos += replacement.length();
+    }
+}
+
+// ============================================================================
+// LoadShadingModel — find, read, cache, and parse a .shadingmodel file
+// ============================================================================
+
+ShaderDescriptor
+InfShaderLoader::LoadShadingModel(const std::string &modelName,
+                                  const std::unordered_map<std::string, std::string> &shaderIdMap) const
+{
+    // Check cache first
+    auto cacheIt = s_shadingModelCache.find(modelName);
+    if (cacheIt != s_shadingModelCache.end())
+        return cacheIt->second;
+
+    // Look up via namespaced key ("shadingmodel/<id>") to avoid collision with @import resolution
+    auto mapIt = shaderIdMap.find("shadingmodel/" + modelName);
+    if (mapIt == shaderIdMap.end()) {
+        INFLOG_ERROR("Shading model '", modelName, "' not found in shader search paths");
+        ShaderDescriptor empty;
+        empty.errors.push_back("Shading model not found: " + modelName);
+        return empty;
+    }
+
+    const std::string &filePath = mapIt->second;
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        INFLOG_ERROR("Failed to open shading model file: ", filePath);
+        ShaderDescriptor empty;
+        empty.errors.push_back("Failed to open: " + filePath);
+        return empty;
+    }
+
+    std::ostringstream content;
+    content << file.rdbuf();
+    file.close();
+
+    // Parse using the same ParseShaderSource (which handles @target blocks for .shadingmodel)
+    ShaderDescriptor desc = ParseShaderSource(content.str(), filePath);
+
+    // Cache the result
+    s_shadingModelCache[modelName] = desc;
+
+    INFLOG_DEBUG("Loaded shading model '", modelName, "' from ", filePath, " with ", desc.targets.size(), " targets");
+
+    return desc;
+}
+
+// ============================================================================
+// GenerateGLSL — produce compilable GLSL from descriptor + resolved source
+// ============================================================================
+
+std::string InfShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
+                                          const ShaderDescriptor *shadingModel, ShaderCompileTarget target) const
+{
+    // Separate resolved source into: version line, annotation lines, code lines
+    std::istringstream stream(resolvedSource);
+    std::string line;
+    std::string versionLine;
+    std::vector<std::string> annotationLines;
+    std::vector<std::string> codeLines;
+
+    while (std::getline(stream, line)) {
+        size_t start = line.find_first_not_of(" \t");
+        std::string trimmedLine = (start != std::string::npos) ? line.substr(start) : "";
+
+        if (!trimmedLine.empty() && trimmedLine[0] == '@') {
+            annotationLines.push_back("// " + line);
+        } else if (!trimmedLine.empty() && trimmedLine.rfind("// @", 0) == 0) {
+            annotationLines.push_back(line);
+        } else if (trimmedLine.rfind("#version", 0) == 0) {
+            versionLine = line;
+        } else {
+            codeLines.push_back(line);
+        }
+    }
+
+    // Check if user has layout(location ...) declarations (custom shader)
+    bool userHasLayoutDecls = false;
+    for (const auto &cl : codeLines) {
+        if (cl.find("layout(location") != std::string::npos) {
+            userHasLayoutDecls = true;
+            break;
+        }
+    }
+
+    // Detect function signatures in resolved (post-import) code
+    bool hasSurfaceFunc = false;
+    bool hasMainFunc = false;
+    for (const auto &cl : codeLines) {
+        size_t firstChar = cl.find_first_not_of(" \t");
+        if (firstChar != std::string::npos && cl.compare(firstChar, 2, "//") == 0)
+            continue;
+        if (cl.find("void surface(") != std::string::npos)
+            hasSurfaceFunc = true;
+        if (cl.find("void main(") != std::string::npos || cl.find("void main (") != std::string::npos)
+            hasMainFunc = true;
+    }
+
+    std::ostringstream result;
+
+    // #version must be first line
+    result << (versionLine.empty() ? "#version 450" : versionLine) << "\n";
+
+    // Annotation lines as comments
+    for (const auto &ann : annotationLines) {
+        result << ann << "\n";
+    }
+
+    // ================================================================
+    // Determine shading model capabilities
+    // ================================================================
+    bool needsLightingUBO = false;
+    bool hasGBufferTarget = false;
+    // Shadow alpha-clip: when @alpha_clip is active, the shadow pass needs
+    // texture samplers, MaterialProperties UBO, and user surface() code
+    // so it can sample alpha and discard transparent fragments.
+    bool shadowNeedsAlphaClip = false;
+    if (shadingModel) {
+        // Shadow pass never needs LightingUBO — depth only
+        if (target != ShaderCompileTarget::Shadow) {
+            needsLightingUBO = shadingModel->NeedsLightingUBO();
+        }
+        // GBuffer target: always enabled — engine provides default packing
+        // when the shadingmodel has no explicit @target: gbuffer block.
+        if (target == ShaderCompileTarget::GBuffer) {
+            hasGBufferTarget = true;
+        }
+    }
+    if (target == ShaderCompileTarget::Shadow && desc.surfaceOptions.alphaClip != "off" &&
+        !desc.surfaceOptions.alphaClip.empty()) {
+        shadowNeedsAlphaClip = true;
+    }
+
+    // ================================================================
+    // Compile-time target defines
+    // ================================================================
+    if (target == ShaderCompileTarget::Forward)
+        result << "#define INF_FORWARD_PASS 1\n";
+    else if (target == ShaderCompileTarget::GBuffer)
+        result << "#define INF_GBUFFER_PASS 1\n";
+    else if (target == ShaderCompileTarget::Shadow)
+        result << "#define INF_SHADOW_PASS 1\n";
+
+    // ================================================================
+    // Inject engine globals UBO (set 2) — always available except shadow
+    // ================================================================
+    if (target != ShaderCompileTarget::Shadow) {
+        result << "\n// Auto-generated engine globals UBO (set 2)\n";
+        result << LoadTemplate("globals_ubo.glsl") << "\n";
+    }
+
+    // ================================================================
+    // Inject remaining builtins (only when user has no layout declarations)
+    // ================================================================
+    if (!userHasLayoutDecls) {
+        if (desc.isVertexShader && target == ShaderCompileTarget::Shadow) {
+            // Shadow vertex variant: use shadow-specific builtins (shadow UBO at set 0)
+            // No InfGlobals (set 2) — shadow pipeline layout only provides set 0
+            result << "\n// Auto-generated shadow vertex builtins\n";
+            result << LoadTemplate("shadow_vertex_builtins.glsl") << "\n";
+        } else if (desc.isFragmentShader && target == ShaderCompileTarget::Shadow) {
+            // Shadow fragment variant: only fragment varyings for interface matching
+            // No InfGlobals (set 2) — shadow pipeline layout only provides set 0
+            result << "\n// Auto-generated fragment varyings (shadow — interface match)\n";
+            result << LoadTemplate("fragment_varyings.glsl") << "\n";
+        } else {
+            if (desc.isVertexShader) {
+                // Unified vertex builtins for all shading models
+                result << "\n// Auto-generated vertex builtins (unified)\n";
+                result << LoadTemplate("vertex_builtins.glsl") << "\n";
+            } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
+                // Forward / GBuffer: full varying + output injection
+                // LightingUBO — only when the shading model requires it
+                if (needsLightingUBO) {
+                    result << "\n// Auto-generated LightingUBO (required by shading model)\n";
+                    result << LoadTemplate("lighting_ubo.glsl") << "\n";
+                }
+
+                // Unified fragment varying inputs
+                result << "\n// Auto-generated fragment varyings (unified)\n";
+                result << LoadTemplate("fragment_varyings.glsl") << "\n";
+
+                // Fragment output declarations
+                if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
+                    result << "\n// GBuffer outputs (deferred rendering)\n";
+                    result << LoadTemplate("gbuffer_outputs.glsl") << "\n";
+                } else if (needsLightingUBO) {
+                    result << "\n" << LoadTemplate("fragment_outputs_lit.glsl") << "\n";
+                } else {
+                    result << "\n" << LoadTemplate("fragment_outputs_unlit.glsl") << "\n";
+                }
+            }
+        }
+    }
+
+    // ================================================================
+    // Texture sampler declarations  (skip for shadow unless alpha clip)
+    // ================================================================
+    int texBaseBinding = needsLightingUBO ? 2 : 1;
+    if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
+        if (!desc.textureProperties.empty() && desc.isFragmentShader) {
+            result << "\n// Auto-generated texture samplers from @property annotations\n";
+            for (size_t i = 0; i < desc.textureProperties.size(); ++i) {
+                result << "layout(binding = " << (texBaseBinding + static_cast<int>(i)) << ") uniform sampler2D "
+                       << desc.textureProperties[i].name << ";\n";
+            }
+            result << "\n";
+        }
+    }
+
+    // ================================================================
+    // MaterialProperties UBO  (skip for shadow unless alpha clip)
+    // ================================================================
+    // Surface fragment shaders always get _AlphaClipThreshold injected
+    // so that alpha clip can be toggled at runtime via material properties.
+    bool isSurfaceFragment = desc.isFragmentShader && hasSurfaceFunc;
+    bool needsMaterialUBO = !desc.properties.empty() || isSurfaceFragment;
+    if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
+        if (needsMaterialUBO) {
+            int materialBinding = texBaseBinding + static_cast<int>(desc.textureProperties.size());
+            result << "\n// Auto-generated MaterialProperties UBO from @property annotations\n";
+            result << "layout(std140, binding = " << materialBinding << ") uniform MaterialProperties {\n";
+
+            auto writeByType = [&](const std::string &glslType) {
+                for (const auto &prop : desc.properties) {
+                    if (prop.glslType == glslType) {
+                        result << "    " << prop.glslType << " " << prop.name << ";\n";
+                    }
+                }
+            };
+            writeByType("vec4");
+            writeByType("vec3");
+            writeByType("vec2");
+            // Inject _AlphaClipThreshold for surface fragment shaders (before user floats)
+            if (isSurfaceFragment) {
+                result << "    float _AlphaClipThreshold;\n";
+            }
+            writeByType("float");
+            writeByType("int");
+            writeByType("mat4");
+
+            result << "} material;\n\n";
+        }
+    }
+
+    // ================================================================
+    // User code (with annotation lines stripped)
+    // Skip for shadow target unless alpha clip is needed
+    // ================================================================
+    if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
+        for (const auto &codeLine : codeLines) {
+            result << codeLine << "\n";
+        }
+    }
+
+    // ================================================================
+    // Auto-generated main() for surface fragment shaders
+    // ================================================================
+    if (hasSurfaceFunc && !hasMainFunc && desc.isFragmentShader && (desc.hasExplicitType || !userHasLayoutDecls)) {
+        if (target == ShaderCompileTarget::Shadow) {
+            if (shadowNeedsAlphaClip) {
+                // Shadow pass with alpha clip: sample textures, run surface(), discard
+                // Uses uniform-based threshold from MaterialProperties UBO
+                result << "\nvoid main() {\n";
+                result << "    SurfaceData s = InitSurfaceData();\n";
+                result << "    s.normalWS = normalize(v_Normal);\n";
+                result << "    surface(s);\n";
+                result << "    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) "
+                          "discard;\n";
+                result << "}\n";
+            } else {
+                // Shadow pass: depth-only, minimal fragment shader
+                result << "\nvoid main() {\n";
+                result << "    // Depth written automatically by hardware\n";
+                result << "}\n";
+            }
+        } else {
+            // Forward / GBuffer: inject evaluate() from shading model
+            std::string targetName = (target == ShaderCompileTarget::GBuffer) ? "gbuffer" : "forward";
+            if (shadingModel) {
+                const auto *targetBlock = shadingModel->FindTarget(targetName);
+                if (targetBlock && !targetBlock->code.empty()) {
+                    result << "\n// evaluate() from shading model: " << desc.shadingModel << " (@target: " << targetName
+                           << ")\n";
+                    result << targetBlock->code << "\n";
+                } else if (target == ShaderCompileTarget::GBuffer) {
+                    // No custom @target: gbuffer — use engine default packing
+                    result << "\n// Default GBuffer packing (engine-provided)\n";
+                    result << LoadTemplate("default_gbuffer_evaluate.glsl") << "\n";
+                } else {
+                    INFLOG_WARN("Shading model '", desc.shadingModel, "' has no @target: ", targetName, " block");
+                }
+            }
+
+            // Alpha clip is now uniform-based (material._AlphaClipThreshold),
+            // baked into the surface_main templates — no placeholder needed.
+            if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
+                std::string mainTpl = LoadTemplate("surface_main_gbuffer.glsl");
+                result << "\n" << mainTpl << "\n";
+            } else {
+                std::string mainTpl = LoadTemplate("surface_main.glsl");
+                result << "\n" << mainTpl << "\n";
+            }
+        }
+    }
+
+    // ================================================================
+    // Auto-generated main() for vertex shaders
+    // ================================================================
+    if (desc.isVertexShader && !hasMainFunc && !userHasLayoutDecls) {
+        std::string vertexCall = desc.hasVertexFunc ? "    vertex(v);\n" : "";
+        std::string templateName =
+            (target == ShaderCompileTarget::Shadow) ? "shadow_vertex_main.glsl" : "vertex_main.glsl";
+        std::string mainTpl = LoadTemplate(templateName);
+        ReplacePlaceholder(mainTpl, "${VERTEX_CALL}", vertexCall);
+        result << "\n" << mainTpl << "\n";
+    }
+
+    return result.str();
+}
+
+// ============================================================================
+// PreprocessShaderSource — full pipeline: parse → import → generate
+// ============================================================================
+
+std::string InfShaderLoader::PreprocessShaderSource(const std::string &source, const std::string &filePath,
+                                                    ShaderCompileTarget target)
+{
+    // Stage 1: Parse source into structured descriptor
+    ShaderDescriptor desc = ParseShaderSource(source, filePath);
+
+    // Stage 2: Resolve @import directives
+    std::string resolvedSource = source;
+    const ShaderDescriptor *shadingModelPtr = nullptr;
+    ShaderDescriptor shadingModelDesc;
+
+    if (!filePath.empty()) {
+        std::filesystem::path shaderPath(filePath);
+        std::string baseDir = shaderPath.parent_path().string();
+        auto shaderIdMap = BuildShaderIdMap(baseDir);
+
+        std::set<std::string> includeStack;
+        if (!desc.shaderId.empty()) {
+            includeStack.insert(desc.shaderId);
+        }
+
+        // Load the referenced .shadingmodel (if any) and auto-inject its @import dependencies
+        if (!desc.shadingModel.empty() && desc.isFragmentShader && desc.hasSurfaceFunc && !desc.hasMainFunc) {
+            shadingModelDesc = LoadShadingModel(desc.shadingModel, shaderIdMap);
+            if (shadingModelDesc.errors.empty()) {
+                shadingModelPtr = &shadingModelDesc;
+
+                // Auto-inject the shading model's @import dependencies into the source
+                // using the IR imports list for dedup instead of regex on source text
+                std::set<std::string> existingImports(desc.imports.begin(), desc.imports.end());
+                for (const auto &imp : shadingModelDesc.imports) {
+                    if (existingImports.find(imp) == existingImports.end()) {
+                        resolvedSource = "@import: " + imp + "\n" + resolvedSource;
+                        existingImports.insert(imp);
+                    }
+                }
+            }
+        }
+
+        // Auto-inject @import: surface for surface() shader model
+        if (desc.hasSurfaceFunc && !desc.hasMainFunc && desc.isFragmentShader) {
+            // Check via IR: desc.imports already parsed all @import from source
+            bool hasSurfaceImport = false;
+            bool hasObjectUtilsImport = false;
+            for (const auto &imp : desc.imports) {
+                if (imp == "surface")
+                    hasSurfaceImport = true;
+                if (imp == "lib/object_utils")
+                    hasObjectUtilsImport = true;
+            }
+            if (!hasSurfaceImport) {
+                resolvedSource = "@import: surface\n" + resolvedSource;
+            }
+            if (!hasObjectUtilsImport) {
+                resolvedSource = "@import: lib/object_utils\n" + resolvedSource;
+            }
+        }
+
+        resolvedSource = ResolveImports(resolvedSource, shaderIdMap, includeStack, 0);
+    }
+
+    // Stage 3: Generate GLSL from descriptor + resolved source + shading model
+    return GenerateGLSL(desc, resolvedSource, shadingModelPtr, target);
+}
+
+std::shared_ptr<std::vector<char>> InfShaderLoader::Compile(const char *content, size_t contentSize,
+                                                            InfResourceMeta &metaData)
+{
+    s_lastCompileError.clear();
+
+    if (!content) {
+        INFLOG_ERROR("Invalid shader content");
+        s_lastCompileError = "Invalid shader content";
+        return nullptr;
+    }
+
+    std::string filePath = metaData.GetDataAs<std::string>("file_path");
+    std::string type = metaData.GetDataAs<std::string>("type");
+    INFLOG_DEBUG("InfShaderLoader::Compile - Compiling shader: ", filePath);
+
+    EShLanguage shaderType = GetShaderType(type);
+    if (shaderType == EShLangCount) {
+        INFLOG_ERROR("Invalid shader type: ", type);
+        return nullptr;
+    }
+
+    // ---- Forward variant compilation ----
+    std::string shaderSource = PreprocessShaderSource(std::string(content), filePath, ShaderCompileTarget::Forward);
+
+    std::vector<char> forwardSpirv;
+    if (!CompileGLSL(shaderSource, shaderType, filePath, forwardSpirv)) {
+        return nullptr;
+    }
+
+    auto compiledData = std::make_shared<std::vector<char>>(std::move(forwardSpirv));
+
+    // ---- Shadow + GBuffer variant compilation for surface fragment shaders ----
+    if (type == "fragment") {
+        ShaderDescriptor desc = ParseShaderSource(std::string(content), filePath);
+        if (desc.hasSurfaceFunc && !desc.hasMainFunc) {
+            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow", s_shadowVariantCache);
+
+            if (!desc.shadingModel.empty() && desc.shadingModel != "custom") {
+                CompileVariant(content, filePath, ShaderCompileTarget::GBuffer, "GBuffer", s_gbufferVariantCache);
+            }
+        }
+    }
+
+    // ---- Shadow vertex variant compilation for surface vertex shaders ----
+    if (type == "vertex") {
+        ShaderDescriptor desc = ParseShaderSource(std::string(content), filePath);
+        if (!desc.hasMainFunc && !desc.isLibrary) {
+            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "ShadowVertex", s_shadowVertexVariantCache,
+                           EShLangVertex);
+        }
+    }
+
+    return compiledData;
+}
+
+std::string InfShaderLoader::TrimShaderSource(const std::string &source)
+{
+    std::string result = source;
+    size_t lastBrace = result.find_last_of('}');
+    if (lastBrace != std::string::npos) {
+        result = result.substr(0, lastBrace + 1);
+    }
+    while (!result.empty() && std::isspace(result.back())) {
+        result.pop_back();
+    }
+    return result;
+}
+
+bool InfShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
+                                  std::vector<char> &outSpirv)
+{
+    std::string trimmed = TrimShaderSource(glslSource);
+
+    std::vector<char> buf(trimmed.begin(), trimmed.end());
+    buf.push_back('\0');
+    const char *strings[1] = {buf.data()};
+
+    glslang::TShader shader(shaderType);
+    shader.setStrings(strings, 1);
+
+    constexpr int clientInputSemanticsVersion = 100;
+    constexpr auto vulkanClientVersion = glslang::EShTargetVulkan_1_2;
+    constexpr auto targetVersion = glslang::EShTargetSpv_1_5;
+
+    shader.setEnvInput(glslang::EShSourceGlsl, shaderType, glslang::EShClientVulkan, clientInputSemanticsVersion);
+    shader.setEnvClient(glslang::EShClientVulkan, vulkanClientVersion);
+    shader.setEnvTarget(glslang::EShTargetSpv, targetVersion);
+
+    EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
+    if (!shader.parse(&m_builtInResources, 100, false, messages)) {
+        s_lastCompileError = std::string("Shader parse failed:\n") + shader.getInfoLog();
+        INFLOG_ERROR("Shader parse failed:\n", shader.getInfoLog());
+        INFLOG_ERROR("Shader content:\n", trimmed);
+        INFLOG_ERROR("Shader file path: ", filePath);
+        return false;
+    }
+
+    glslang::TProgram program;
+    program.addShader(&shader);
+    if (!program.link(messages)) {
+        s_lastCompileError = std::string("Shader link failed:\n") + program.getInfoLog();
+        INFLOG_ERROR("Shader link failed for '", filePath, "':\n", program.getInfoLog());
+        return false;
+    }
+
+    std::vector<unsigned int> spirv;
+    glslang::GlslangToSpv(*program.getIntermediate(shaderType), spirv, &m_options);
+
+    outSpirv.resize(spirv.size() * sizeof(unsigned int));
+    std::memcpy(outSpirv.data(), reinterpret_cast<const char *>(spirv.data()), outSpirv.size());
+    return true;
+}
+
+void InfShaderLoader::CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
+                                     const std::string &variantName,
+                                     std::unordered_map<std::string, std::vector<char>> &cache, EShLanguage shaderType)
+{
+    std::string variantSource = PreprocessShaderSource(std::string(content), filePath, target);
+
+    INFLOG_DEBUG("Compiling ", variantName, " variant for: ", filePath, "\n", variantSource);
+
+    std::vector<char> spirv;
+    if (!CompileGLSL(variantSource, shaderType, filePath, spirv)) {
+        INFLOG_WARN(variantName, " variant compile failed for '", filePath, "'");
+        INFLOG_WARN(variantName, " variant source:\n", TrimShaderSource(variantSource));
+        return;
+    }
+
+    size_t variantSize = spirv.size();
+    cache[filePath] = std::move(spirv);
+    INFLOG_INFO(variantName, " variant compiled for: ", filePath, " (", variantSize, " bytes)");
+}
+
+void InfShaderLoader::InitGLSLBuiltResources()
+{
+    m_builtInResources.maxLights = 32;
+    m_builtInResources.maxClipPlanes = 6;
+    m_builtInResources.maxTextureUnits = 32;
+    m_builtInResources.maxTextureCoords = 32;
+    m_builtInResources.maxVertexAttribs = 64;
+    m_builtInResources.maxVertexUniformComponents = 4096;
+    m_builtInResources.maxVaryingFloats = 64;
+    m_builtInResources.maxVertexTextureImageUnits = 32;
+    m_builtInResources.maxCombinedTextureImageUnits = 80;
+    m_builtInResources.maxTextureImageUnits = 32;
+    m_builtInResources.maxFragmentUniformComponents = 4096;
+    m_builtInResources.maxDrawBuffers = 32;
+    m_builtInResources.maxVertexUniformVectors = 128;
+    m_builtInResources.maxVaryingVectors = 8;
+    m_builtInResources.maxFragmentUniformVectors = 16;
+    m_builtInResources.maxVertexOutputVectors = 16;
+    m_builtInResources.maxFragmentInputVectors = 15;
+    m_builtInResources.minProgramTexelOffset = -8;
+    m_builtInResources.maxProgramTexelOffset = 7;
+    m_builtInResources.maxClipDistances = 8;
+    m_builtInResources.maxComputeWorkGroupCountX = 65535;
+    m_builtInResources.maxComputeWorkGroupCountY = 65535;
+    m_builtInResources.maxComputeWorkGroupCountZ = 65535;
+    m_builtInResources.maxComputeWorkGroupSizeX = 1024;
+    m_builtInResources.maxComputeWorkGroupSizeY = 1024;
+    m_builtInResources.maxComputeWorkGroupSizeZ = 64;
+    m_builtInResources.maxComputeUniformComponents = 1024;
+    m_builtInResources.maxComputeTextureImageUnits = 16;
+    m_builtInResources.maxComputeImageUniforms = 8;
+    m_builtInResources.maxComputeAtomicCounters = 8;
+    m_builtInResources.maxComputeAtomicCounterBuffers = 1;
+    m_builtInResources.maxVaryingComponents = 60;
+    m_builtInResources.maxVertexOutputComponents = 64;
+    m_builtInResources.maxGeometryInputComponents = 64;
+    m_builtInResources.maxGeometryOutputComponents = 128;
+    m_builtInResources.maxFragmentInputComponents = 128;
+    m_builtInResources.maxImageUnits = 8;
+    m_builtInResources.maxCombinedImageUnitsAndFragmentOutputs = 8;
+    m_builtInResources.maxCombinedShaderOutputResources = 8;
+    m_builtInResources.maxImageSamples = 0;
+    m_builtInResources.maxVertexImageUniforms = 0;
+    m_builtInResources.maxTessControlImageUniforms = 0;
+    m_builtInResources.maxTessEvaluationImageUniforms = 0;
+    m_builtInResources.maxGeometryImageUniforms = 0;
+    m_builtInResources.maxFragmentImageUniforms = 8;
+    m_builtInResources.maxCombinedImageUniforms = 8;
+    m_builtInResources.maxGeometryTextureImageUnits = 16;
+    m_builtInResources.maxGeometryOutputVertices = 256;
+    m_builtInResources.maxGeometryTotalOutputComponents = 1024;
+    m_builtInResources.maxGeometryUniformComponents = 1024;
+    m_builtInResources.maxGeometryVaryingComponents = 64;
+    m_builtInResources.maxTessControlInputComponents = 128;
+    m_builtInResources.maxTessControlOutputComponents = 128;
+    m_builtInResources.maxTessControlTextureImageUnits = 16;
+    m_builtInResources.maxTessControlUniformComponents = 1024;
+    m_builtInResources.maxTessControlTotalOutputComponents = 4096;
+    m_builtInResources.maxTessEvaluationInputComponents = 128;
+    m_builtInResources.maxTessEvaluationOutputComponents = 128;
+    m_builtInResources.maxTessEvaluationTextureImageUnits = 16;
+    m_builtInResources.maxTessEvaluationUniformComponents = 1024;
+    m_builtInResources.maxTessPatchComponents = 120;
+    m_builtInResources.maxPatchVertices = 32;
+    m_builtInResources.maxTessGenLevel = 64;
+    m_builtInResources.maxViewports = 16;
+    m_builtInResources.maxVertexAtomicCounters = 0;
+    m_builtInResources.maxTessControlAtomicCounters = 0;
+    m_builtInResources.maxTessEvaluationAtomicCounters = 0;
+    m_builtInResources.maxGeometryAtomicCounters = 0;
+    m_builtInResources.maxFragmentAtomicCounters = 8;
+    m_builtInResources.maxCombinedAtomicCounters = 8;
+    m_builtInResources.maxAtomicCounterBindings = 1;
+    m_builtInResources.maxVertexAtomicCounterBuffers = 0;
+    m_builtInResources.maxTessControlAtomicCounterBuffers = 0;
+    m_builtInResources.maxTessEvaluationAtomicCounterBuffers = 0;
+    m_builtInResources.maxGeometryAtomicCounterBuffers = 0;
+    m_builtInResources.maxFragmentAtomicCounterBuffers = 1;
+    m_builtInResources.maxCombinedAtomicCounterBuffers = 1;
+    m_builtInResources.maxAtomicCounterBufferSize = 16384;
+    m_builtInResources.maxTransformFeedbackBuffers = 4;
+    m_builtInResources.maxTransformFeedbackInterleavedComponents = 64;
+    m_builtInResources.maxCullDistances = 8;
+    m_builtInResources.maxCombinedClipAndCullDistances = 8;
+    m_builtInResources.maxSamples = 4;
+    m_builtInResources.maxMeshOutputVerticesNV = 256;
+    m_builtInResources.maxMeshOutputPrimitivesNV = 512;
+    m_builtInResources.maxMeshWorkGroupSizeX_NV = 32;
+    m_builtInResources.maxMeshWorkGroupSizeY_NV = 1;
+    m_builtInResources.maxMeshWorkGroupSizeZ_NV = 1;
+    m_builtInResources.maxTaskWorkGroupSizeX_NV = 32;
+    m_builtInResources.maxTaskWorkGroupSizeY_NV = 1;
+    m_builtInResources.maxTaskWorkGroupSizeZ_NV = 1;
+    m_builtInResources.maxMeshViewCountNV = 4;
+
+    m_builtInResources.limits.nonInductiveForLoops = 1;
+    m_builtInResources.limits.whileLoops = 1;
+    m_builtInResources.limits.doWhileLoops = 1;
+    m_builtInResources.limits.generalUniformIndexing = 1;
+    m_builtInResources.limits.generalAttributeMatrixVectorIndexing = 1;
+    m_builtInResources.limits.generalVaryingIndexing = 1;
+    m_builtInResources.limits.generalSamplerIndexing = 1;
+    m_builtInResources.limits.generalVariableIndexing = 1;
+    m_builtInResources.limits.generalConstantMatrixVectorIndexing = 1;
+}
+
+EShLanguage InfShaderLoader::GetShaderType(const std::string &typeStr)
+{
+    if (typeStr == "vertex") {
+        return EShLangVertex;
+    } else if (typeStr == "fragment") {
+        return EShLangFragment;
+    } else if (typeStr == "geometry") {
+        return EShLangGeometry;
+    } else if (typeStr == "compute") {
+        return EShLangCompute;
+    } else if (typeStr == "tess_control") {
+        return EShLangTessControl;
+    } else if (typeStr == "tess_evaluation") {
+        return EShLangTessEvaluation;
+    }
+    return EShLangCount;
+}
+
+std::unordered_map<std::string, std::string> InfShaderLoader::BuildShaderIdMap(const std::string &dir)
+{
+    // Return cached result if the directory was already scanned
+    auto cacheIt = s_shaderIdMapCache.find(dir);
+    if (cacheIt != s_shaderIdMapCache.end())
+        return cacheIt->second;
+
+    std::unordered_map<std::string, std::string> idMap;
+
+    // Helper lambda: recursively scan a directory and populate idMap
+    auto scanDir = [&](const std::string &scanPath, bool overwrite) {
+        std::error_code ec;
+        for (const auto &entry : std::filesystem::recursive_directory_iterator(scanPath, ec)) {
+            if (!entry.is_regular_file())
+                continue;
+
+            auto ext = entry.path().extension().string();
+            if (ext != ".vert" && ext != ".frag" && ext != ".glsl" && ext != ".shadingmodel")
+                continue;
+
+            // Skip _templates directory
+            std::string pathStr = entry.path().string();
+            if (pathStr.find("_templates") != std::string::npos)
+                continue;
+
+            std::ifstream file(entry.path());
+            if (!file.is_open())
+                continue;
+
+            std::string line;
+            int lineCount = 0;
+            while (std::getline(file, line) && lineCount < 20) {
+                auto annotation = ParseAnnotation(line);
+                if (annotation && annotation->first == "shader_id") {
+                    std::string id = annotation->second;
+                    while (!id.empty() && (id.back() == ' ' || id.back() == '\t'))
+                        id.pop_back();
+
+                    // Namespace .shadingmodel entries to prevent collision with @import resolution.
+                    // e.g. pbr.glsl and pbr.shadingmodel both have @shader_id: pbr, but @import: pbr
+                    // must resolve to the .glsl library, not the shading model definition.
+                    std::string mapKey = (ext == ".shadingmodel") ? ("shadingmodel/" + id) : id;
+
+                    // Only insert if overwrite is true or key doesn't exist yet
+                    if (overwrite || idMap.find(mapKey) == idMap.end()) {
+                        std::error_code ec2;
+                        std::string canonicalPath = std::filesystem::canonical(entry.path(), ec2).string();
+                        if (!ec2) {
+                            idMap[mapKey] = canonicalPath;
+                        }
+                    }
+                    break;
+                }
+                ++lineCount;
+            }
+        }
+    };
+
+    // First, scan additional search paths (engine built-in shaders) as fallback
+    for (const auto &searchPath : s_additionalSearchPaths) {
+        if (searchPath != dir) {
+            scanDir(searchPath, false);
+        }
+    }
+
+    // Then scan the shader's own directory — these entries take priority
+    scanDir(dir, true);
+
+    // Cache the result for subsequent calls with the same directory
+    s_shaderIdMapCache[dir] = idMap;
+
+    return idMap;
+}
+
+std::string InfShaderLoader::ResolveImports(const std::string &source,
+                                            const std::unordered_map<std::string, std::string> &shaderIdMap,
+                                            std::set<std::string> &includeStack, int depth)
+{
+    // Guard against excessive recursion (e.g., A imports B imports C imports D ...)
+    constexpr int MAX_IMPORT_DEPTH = 16;
+    if (depth >= MAX_IMPORT_DEPTH) {
+        std::string chain;
+        for (const auto &id : includeStack) {
+            if (!chain.empty())
+                chain += " -> ";
+            chain += id;
+        }
+        INFLOG_ERROR("Shader @import depth exceeded maximum of ", MAX_IMPORT_DEPTH,
+                     ". Import chain: ", chain.empty() ? "(unknown)" : chain);
+        return source;
+    }
+
+    std::istringstream stream(source);
+    std::ostringstream result;
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        auto annotation = ParseAnnotation(line);
+        if (annotation && annotation->first == "import") {
+            std::string importId = annotation->second;
+
+            // Look up the shader_id in the map
+            auto it = shaderIdMap.find(importId);
+            if (it == shaderIdMap.end()) {
+                INFLOG_ERROR("Shader @import: shader_id '", importId, "' not found in shaders directory");
+                result << "// ERROR: @import shader_id not found: " << importId << "\n";
+                continue;
+            }
+
+            const std::string &importPath = it->second;
+
+            // Diamond-dedup: file already imported via another path (e.g. A→B→D + A→C→D)
+            if (includeStack.count(importId) > 0) {
+                INFLOG_DEBUG("@import dedup, already included: ", importId);
+                result << "// @import dedup: " << importId << " (already included)\n";
+                continue;
+            }
+
+            // Read the imported file
+            std::ifstream importFile(importPath);
+            if (!importFile.is_open()) {
+                INFLOG_ERROR("Failed to open @import file: ", importPath);
+                result << "// ERROR: failed to open @import: " << importId << "\n";
+                continue;
+            }
+
+            std::ostringstream importContent;
+            importContent << importFile.rdbuf();
+            importFile.close();
+
+            // Strip #version directive from imported content (the parent file's #version takes precedence)
+            std::string content = importContent.str();
+            std::istringstream contentStream(content);
+            std::ostringstream strippedContent;
+            std::string contentLine;
+            while (std::getline(contentStream, contentLine)) {
+                size_t firstChar = contentLine.find_first_not_of(" \t");
+                if (firstChar != std::string::npos && contentLine.compare(firstChar, 8, "#version") == 0)
+                    continue;
+                strippedContent << contentLine << "\n";
+            }
+
+            // Recursively resolve imports in the imported file
+            includeStack.insert(importId);
+            std::string resolvedContent = ResolveImports(strippedContent.str(), shaderIdMap, includeStack, depth + 1);
+            // Do NOT erase importId: keep it in the set to prevent diamond
+            // imports from including the same file twice (A→B→D + A→C→D
+            // would otherwise inline D twice, causing GLSL redefinitions).
+
+            // Insert the resolved content (with markers for debugging)
+            result << "// --- begin @import: " << importId << " ---\n";
+            result << resolvedContent;
+            // Ensure newline at end of imported content
+            if (!resolvedContent.empty() && resolvedContent.back() != '\n') {
+                result << "\n";
+            }
+            result << "// --- end @import: " << importId << " ---\n";
+        } else {
+            result << line << "\n";
+        }
+    }
+
+    return result.str();
+}
+} // namespace infengine

@@ -1,0 +1,237 @@
+"""UIEventProcessor — per-frame pointer state machine for screen UI.
+
+One processor is created per Game View and updated each frame after
+screen UI is rendered.  It converts the raw ``Input`` mouse state into
+high-level pointer events (enter / exit / down / up / click) dispatched
+to ``InfUIScreenComponent`` handlers.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Tuple, TYPE_CHECKING
+
+from .ui_event_data import PointerEventData, PointerButton
+
+if TYPE_CHECKING:
+    from .inf_ui_screen_component import InfUIScreenComponent
+    from .ui_canvas import UICanvas
+
+
+# Drag begins once pointer moves farther than this many canvas-design pixels.
+_DRAG_THRESHOLD = 5.0
+
+# Maximum seconds between two clicks to count as double-click.
+_DOUBLE_CLICK_TIME = 0.3
+
+
+class UIEventProcessor:
+    """Per-frame pointer event dispatcher for screen-space UI.
+
+    Usage (from GameViewPanel):
+    >>> processor = UIEventProcessor()
+    >>> # Each frame, after rendering screen UI:
+    >>> processor.process(canvases, canvas_mouse_pos, mouse_btns, scroll, dt)
+    """
+
+    def __init__(self):
+        # Current hover target
+        self._hover_target: Optional[InfUIScreenComponent] = None
+        self._hover_canvas: Optional[UICanvas] = None
+
+        # Press tracking (per button, but simplified to left-button primary)
+        self._press_target: Optional[InfUIScreenComponent] = None
+        self._press_canvas: Optional[UICanvas] = None
+        self._press_position: Tuple[float, float] = (0.0, 0.0)
+
+        # Drag tracking
+        self._drag_target: Optional[InfUIScreenComponent] = None
+        self._is_dragging: bool = False
+
+        # Previous frame position (canvas-design pixels)
+        self._last_canvas_pos: Tuple[float, float] = (0.0, 0.0)
+
+        # Double-click detection
+        self._last_click_time: float = 0.0
+        self._click_count: int = 0
+
+        # Accumulated time
+        self._time: float = 0.0
+
+        # Structure version for cache invalidation
+        self._last_structure_version: int = -1
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def process(
+        self,
+        canvases: List[UICanvas],
+        canvas_positions: List[Tuple[float, float]],
+        mouse_down: bool,
+        mouse_up: bool,
+        mouse_held: bool,
+        scroll_delta: Tuple[float, float],
+        dt: float,
+    ):
+        """Run one frame of event processing.
+
+        Parameters:
+            canvases: Sorted list of active canvases (by sort_order).
+            canvas_positions: Per-canvas pointer position in design pixels.
+                              Must be same length as *canvases*.
+            mouse_down: True during the frame left-button was pressed.
+            mouse_up: True during the frame left-button was released.
+            mouse_held: True while left-button is held.
+            scroll_delta: (sx, sy) scroll delta this frame.
+            dt: Delta time in seconds since last frame.
+        """
+        self._time += dt
+
+        # Use the first canvas position as the "current" for delta calc
+        cur_pos = canvas_positions[0] if canvas_positions else (0.0, 0.0)
+
+        # Early-out: skip raycast + dispatch when nothing changed
+        has_activity = (mouse_down or mouse_up or
+                        scroll_delta[0] != 0 or scroll_delta[1] != 0 or
+                        cur_pos[0] != self._last_canvas_pos[0] or
+                        cur_pos[1] != self._last_canvas_pos[1])
+        if not has_activity and self._press_target is None:
+            return
+
+        delta = (cur_pos[0] - self._last_canvas_pos[0],
+                 cur_pos[1] - self._last_canvas_pos[1])
+
+        # ── Raycast: find topmost hit across all canvases ──
+        hit_elem: Optional[InfUIScreenComponent] = None
+        hit_canvas: Optional[UICanvas] = None
+        hit_pos: Tuple[float, float] = (0.0, 0.0)
+
+        # Iterate in reverse sort order (highest sort_order on top)
+        for i in range(len(canvases) - 1, -1, -1):
+            canvas = canvases[i]
+            cx, cy = canvas_positions[i]
+            elem = canvas.raycast(cx, cy)
+            if elem is not None:
+                hit_elem = elem
+                hit_canvas = canvas
+                hit_pos = (cx, cy)
+                break
+
+        # ── Enter / Exit ──
+        prev_hover = self._hover_target
+        if hit_elem is not prev_hover:
+            if prev_hover is not None:
+                ev = self._make_event(hit_pos, delta, self._hover_canvas, prev_hover)
+                prev_hover.on_pointer_exit(ev)
+            self._hover_target = hit_elem
+            self._hover_canvas = hit_canvas
+            if hit_elem is not None:
+                ev = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
+                hit_elem.on_pointer_enter(ev)
+
+        # ── Down ──
+        if mouse_down and hit_elem is not None:
+            self._press_target = hit_elem
+            self._press_canvas = hit_canvas
+            self._press_position = hit_pos
+            self._drag_target = hit_elem
+            self._is_dragging = False
+
+            ev = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
+            ev.press_position = self._press_position
+            hit_elem.on_pointer_down(ev)
+
+        # ── Drag (held) ──
+        if mouse_held and self._drag_target is not None:
+            dx = cur_pos[0] - self._press_position[0]
+            dy = cur_pos[1] - self._press_position[1]
+            dist_sq = dx * dx + dy * dy
+            if not self._is_dragging and dist_sq > _DRAG_THRESHOLD * _DRAG_THRESHOLD:
+                self._is_dragging = True
+                ev = self._make_event(cur_pos, delta, self._press_canvas, self._drag_target)
+                ev.press_position = self._press_position
+                self._drag_target.on_begin_drag(ev)
+            elif self._is_dragging:
+                ev = self._make_event(cur_pos, delta, self._press_canvas, self._drag_target)
+                ev.press_position = self._press_position
+                self._drag_target.on_drag(ev)
+
+        # ── Up / Click ──
+        if mouse_up:
+            press_target = self._press_target
+            if press_target is not None:
+                ev = self._make_event(
+                    hit_pos if hit_elem is not None else cur_pos,
+                    delta,
+                    self._press_canvas,
+                    press_target,
+                )
+                ev.press_position = self._press_position
+                press_target.on_pointer_up(ev)
+
+                # Click = up on same element as down
+                if hit_elem is press_target:
+                    if (self._time - self._last_click_time) < _DOUBLE_CLICK_TIME:
+                        self._click_count += 1
+                    else:
+                        self._click_count = 1
+                    self._last_click_time = self._time
+
+                    ev_click = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
+                    ev_click.press_position = self._press_position
+                    ev_click.click_count = self._click_count
+                    hit_elem.on_pointer_click(ev_click)
+
+            # End drag
+            if self._is_dragging and self._drag_target is not None:
+                ev_drag = self._make_event(cur_pos, delta, self._press_canvas, self._drag_target)
+                ev_drag.press_position = self._press_position
+                self._drag_target.on_end_drag(ev_drag)
+
+            self._press_target = None
+            self._press_canvas = None
+            self._drag_target = None
+            self._is_dragging = False
+
+        # ── Scroll ──
+        if (scroll_delta[0] != 0 or scroll_delta[1] != 0) and hit_elem is not None:
+            ev = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
+            ev.scroll_delta = scroll_delta
+            hit_elem.on_scroll(ev)
+
+        self._last_canvas_pos = cur_pos
+
+    def reset(self):
+        """Clear all transient state (e.g. when play mode stops)."""
+        if self._hover_target is not None:
+            ev = self._make_event(self._last_canvas_pos, (0, 0),
+                                  self._hover_canvas, self._hover_target)
+            self._hover_target.on_pointer_exit(ev)
+        self._hover_target = None
+        self._hover_canvas = None
+        self._press_target = None
+        self._press_canvas = None
+        self._drag_target = None
+        self._is_dragging = False
+        self._click_count = 0
+        self._last_structure_version = -1
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_event(
+        self,
+        pos: Tuple[float, float],
+        delta: Tuple[float, float],
+        canvas: Optional[UICanvas],
+        target: Optional[InfUIScreenComponent],
+    ) -> PointerEventData:
+        ev = PointerEventData()
+        ev.position = pos
+        ev.delta = delta
+        ev.button = PointerButton.Left
+        ev.canvas = canvas
+        ev.target = target
+        return ev

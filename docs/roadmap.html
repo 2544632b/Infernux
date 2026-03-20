@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roadmap — Infernux Engine</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/roadmap.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="index.html" data-i18n="nav.home">Home</a>
+                <a href="index.html#system" data-i18n="nav.features">Features</a>
+                <a href="index.html#capabilities" data-i18n="nav.showcase">Showcase</a>
+                <a href="index.html#difference" data-i18n="nav.comparison">Comparison</a>
+                <a href="roadmap.html" class="active" data-i18n="nav.roadmap">Roadmap</a>
+                <a href="wiki.html" data-i18n="nav.docs">Docs</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank" rel="noopener">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button class="lang-toggle" onclick="toggleLanguage()">
+                    <span id="lang-text">中文</span>
+                </button>
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="page-shell roadmap-layout">
+        <div class="container">
+            <section class="subpage-hero roadmap-hero">
+                <div class="kicker" data-i18n="roadmap.hero.kicker">Release planning</div>
+                <h1 data-i18n="roadmap.hero.title">A roadmap that reads like engineering work, not decorative ambition.</h1>
+                <p data-i18n="roadmap.hero.description">The project is moving from technical preview toward a more complete production pipeline. The priorities below group work by release pressure and workflow impact, not by vague marketing buckets.</p>
+                <div class="hub-actions">
+                    <a href="https://github.com/ChenlizheMe/InfEngine/issues" class="btn btn-primary" target="_blank" rel="noopener" data-i18n="roadmap.hero.primary">Track issues</a>
+                    <a href="wiki.html" class="btn btn-secondary" data-i18n="roadmap.hero.secondary">Read docs first</a>
+                </div>
+            </section>
+
+            <section class="release-grid">
+                <article class="release-card">
+                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">Current</div>
+                    <strong>v0.1</strong>
+                    <h3 data-i18n="roadmap.release.current.title">Runtime and editor foundation</h3>
+                    <ul>
+                        <li data-i18n="roadmap.release.current.item1">Vulkan renderer, Python scripting, editor panels, asset workflows.</li>
+                        <li data-i18n="roadmap.release.current.item2">Technical preview suitable for engine contributors and internal prototyping.</li>
+                    </ul>
+                </article>
+                <article class="release-card">
+                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">Next milestone</div>
+                    <strong>v0.2</strong>
+                    <h3 data-i18n="roadmap.release.next.title">Prefab and authoring ergonomics</h3>
+                    <ul>
+                        <li data-i18n="roadmap.release.next.item1">Prefab workflows, UI completion, asset rename stability.</li>
+                        <li data-i18n="roadmap.release.next.item2">Reduce day-to-day production friction in editor-driven projects.</li>
+                    </ul>
+                </article>
+                <article class="release-card">
+                    <div class="mini-tag" data-i18n="roadmap.release.mid.tag">Mid-term</div>
+                    <strong>v0.3</strong>
+                    <h3 data-i18n="roadmap.release.mid.title">Animation and richer content import</h3>
+                    <ul>
+                        <li data-i18n="roadmap.release.mid.item1">Skeletal animation, state machines, model pipeline expansion.</li>
+                        <li data-i18n="roadmap.release.mid.item2">Push the engine from systems groundwork toward content-heavy production.</li>
+                    </ul>
+                </article>
+                <article class="release-card">
+                    <div class="mini-tag" data-i18n="roadmap.release.long.tag">Shipping path</div>
+                    <strong>v0.4+</strong>
+                    <h3 data-i18n="roadmap.release.long.title">Standalone build and broader runtime scope</h3>
+                    <ul>
+                        <li data-i18n="roadmap.release.long.item1">Player export, particles, terrain, broader project completion path.</li>
+                        <li data-i18n="roadmap.release.long.item2">Move from preview tooling toward distributable game production.</li>
+                    </ul>
+                </article>
+            </section>
+
+            <section class="roadmap-bands">
+                <div class="section-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="roadmap.lanes.kicker">Priority bands</div>
+                        <h2 class="section-title" data-i18n="roadmap.lanes.title">The roadmap is split by what actually unlocks the next class of project.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="roadmap.lanes.intro">This page is intentionally structured around release leverage. Each band answers a different question: can teams author faster, can content scale, and can projects ship?</p>
+                </div>
+                <div class="lane-grid">
+                    <article class="lane-card">
+                        <div class="card-mark"><i class="fas fa-toolbox"></i></div>
+                        <h3 data-i18n="roadmap.lanes.card1.title">Authoring band</h3>
+                        <ul class="list-clean">
+                            <li data-i18n="roadmap.lanes.card1.item1">Prefab authoring and instance management.</li>
+                            <li data-i18n="roadmap.lanes.card1.item2">UI editor completion and editor UX hardening.</li>
+                            <li data-i18n="roadmap.lanes.card1.item3">Safer asset rename and dependency repair paths.</li>
+                        </ul>
+                    </article>
+                    <article class="lane-card">
+                        <div class="card-mark"><i class="fas fa-layer-group"></i></div>
+                        <h3 data-i18n="roadmap.lanes.card2.title">Content band</h3>
+                        <ul class="list-clean">
+                            <li data-i18n="roadmap.lanes.card2.item1">Animation state machines and skeletal playback.</li>
+                            <li data-i18n="roadmap.lanes.card2.item2">Model import maturity for larger production scenes.</li>
+                            <li data-i18n="roadmap.lanes.card2.item3">Better scene composition for reusable runtime content.</li>
+                        </ul>
+                    </article>
+                    <article class="lane-card">
+                        <div class="card-mark"><i class="fas fa-ship"></i></div>
+                        <h3 data-i18n="roadmap.lanes.card3.title">Shipping band</h3>
+                        <ul class="list-clean">
+                            <li data-i18n="roadmap.lanes.card3.item1">Standalone player build and packaging.</li>
+                            <li data-i18n="roadmap.lanes.card3.item2">Particle, terrain, and broader runtime feature coverage.</li>
+                            <li data-i18n="roadmap.lanes.card3.item3">More robust project lifecycle from prototype to release.</li>
+                        </ul>
+                    </article>
+                    <article class="lane-card">
+                        <div class="card-mark"><i class="fas fa-microchip"></i></div>
+                        <h3 data-i18n="roadmap.lanes.card4.title">Architecture band</h3>
+                        <ul class="list-clean">
+                            <li data-i18n="roadmap.lanes.card4.item1">Keep render and tooling internals explicit as the engine grows.</li>
+                            <li data-i18n="roadmap.lanes.card4.item2">Avoid accidental complexity that would erase the engine's main advantage.</li>
+                            <li data-i18n="roadmap.lanes.card4.item3">Preserve scriptability while strengthening native ownership boundaries.</li>
+                        </ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="roadmap.priorities.kicker">Immediate focus</div>
+                        <h2 class="section-title" data-i18n="roadmap.priorities.title">What deserves attention right now.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="roadmap.priorities.intro">These are the work items most likely to improve the engine's day-to-day usefulness for contributors and early projects.</p>
+                </div>
+                <div class="priority-grid">
+                    <article class="priority-card">
+                        <div class="card-mark"><i class="fas fa-cubes"></i></div>
+                        <h3 data-i18n="roadmap.priorities.card1.title">Prefab lifecycle</h3>
+                        <p data-i18n="roadmap.priorities.card1.body">Without prefabs, scene reuse and team collaboration stay heavier than they should. This is one of the highest leverage missing systems.</p>
+                    </article>
+                    <article class="priority-card">
+                        <div class="card-mark"><i class="fas fa-vector-square"></i></div>
+                        <h3 data-i18n="roadmap.priorities.card2.title">UI pipeline completion</h3>
+                        <p data-i18n="roadmap.priorities.card2.body">The editor already exposes a strong base. Completing UI authoring turns that base into a more credible project workflow.</p>
+                    </article>
+                    <article class="priority-card">
+                        <div class="card-mark"><i class="fas fa-link"></i></div>
+                        <h3 data-i18n="roadmap.priorities.card3.title">Asset GUID reliability</h3>
+                        <p data-i18n="roadmap.priorities.card3.body">Rename and move operations must become safer if the engine is going to support larger repositories and less fragile collaboration.</p>
+                    </article>
+                    <article class="priority-card">
+                        <div class="card-mark"><i class="fas fa-running"></i></div>
+                        <h3 data-i18n="roadmap.priorities.card4.title">Animation path</h3>
+                        <p data-i18n="roadmap.priorities.card4.body">Animation is the bridge between a strong renderer and believable game content. It is the next major expansion in expressive scope.</p>
+                    </article>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <div class="nav-logo">
+                        <span class="logo-icon">🔥</span>
+                        <span class="logo-text">Infernux Engine</span>
+                    </div>
+                    <p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-column">
+                        <h4 data-i18n="footer.resources">Resources</h4>
+                        <a href="wiki.html" data-i18n="nav.docs">Docs</a>
+                        <a href="../README.md">README</a>
+                    </div>
+                    <div class="footer-column">
+                        <h4 data-i18n="footer.community">Community</h4>
+                        <a href="https://github.com/ChenlizheMe/InfEngine/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a>
+                        <a href="https://github.com/ChenlizheMe/InfEngine/discussions" target="_blank" rel="noopener" data-i18n="footer.discussions">Discussions</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">&copy; 2024-2026 Lizhe Chen. MIT License.</div>
+        </div>
+    </footer>
+
+    <script src="js/i18n.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

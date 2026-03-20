@@ -1,0 +1,690 @@
+"""
+GameBuilder — packages a standalone native game from an InfEngine project.
+
+Uses **Nuitka** to compile the Python entry script into a native EXE.
+All engine code, dependencies, and the CPython runtime are bundled into
+a self-contained directory.  User scripts (.py in Assets/) are compiled
+to .pyc with ``py_compile`` for source protection.
+
+Output layout::
+
+    <OutputDir>/
+        <GameName>.exe          ← Nuitka-compiled native executable
+        python312.dll           ← CPython runtime (required by Nuitka)
+        SDL3.dll, imgui.dll … ← engine native DLLs (also in InfEngine/lib/)
+        InfEngine/              ← engine package
+            lib/
+                _InfEngine.*.pyd ← pybind11 extension module
+                SDL3.dll …       ← DLLs (for os.add_dll_directory)
+        Data/
+            Assets/             ← game scenes, scripts(.pyc), textures, models
+            ProjectSettings/    ← build & tag-layer settings
+            materials/
+            Splash/             ← splash images + .infsplash video data
+            BuildManifest.json  ← display mode, window size, splash config
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import py_compile
+import shutil
+import struct
+import sys
+from typing import Callable, Dict, List, Optional
+
+from InfEngine.debug import Debug
+from InfEngine.engine.nuitka_builder import NuitkaBuilder
+
+
+class GameBuilder:
+    """Build a standalone native game distribution using Nuitka."""
+
+    _GAME_DATA_DIRS = ["Assets", "ProjectSettings", "materials"]
+    _EXCLUDE_PATTERNS = {"__pycache__", ".git", ".gitignore"}
+
+    def __init__(
+        self,
+        project_path: str,
+        output_dir: str,
+        *,
+        display_mode: str = "fullscreen_borderless",
+        window_width: int = 1280,
+        window_height: int = 720,
+        splash_items: Optional[List[Dict]] = None,
+    ):
+        self.project_path = os.path.abspath(project_path)
+        self.project_name = os.path.basename(self.project_path)
+        self.output_dir = os.path.abspath(output_dir)
+        self.display_mode = display_mode
+        self.window_width = window_width
+        self.window_height = window_height
+        self.splash_items = list(splash_items) if splash_items else []
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def build(
+        self,
+        on_progress: Optional[Callable[[str, float], None]] = None,
+    ) -> str:
+        """Run the full build pipeline.  Returns the final output directory."""
+
+        def _p(msg: str, pct: float):
+            if on_progress:
+                on_progress(msg, pct)
+            Debug.log_internal(f"[Build {pct:.0%}] {msg}")
+
+        _p("验证项目 Validating project...", 0.00)
+        self._validate()
+
+        _p("清理输出目录 Cleaning output...", 0.02)
+        self._clean_output()
+
+        _p("收集用户依赖 Collecting user dependencies...", 0.04)
+        user_packages = self._collect_user_dependencies()
+
+        _p("生成入口脚本 Generating boot script...", 0.05)
+        boot_script = self._generate_boot_script()
+
+        _p("Nuitka 原生编译 Nuitka native compilation...", 0.06)
+        dist_dir = self._run_nuitka(boot_script, on_progress, user_packages)
+
+        _p("整理输出目录 Organizing output directory...", 0.86)
+        final_dir = self._organize_output(dist_dir)
+
+        _p("复制游戏数据 Copying game data...", 0.88)
+        self._copy_game_data(final_dir)
+
+        _p("编译用户脚本 Compiling user scripts...", 0.91)
+        self._compile_user_scripts(final_dir)
+
+        _p("处理开场画面 Processing splash items...", 0.93)
+        self._process_splash_items(final_dir)
+
+        _p("处理场景路径 Fixing scene paths...", 0.96)
+        self._relativize_scenes(final_dir)
+
+        _p("生成构建清单 Generating manifest...", 0.97)
+        self._generate_manifest(final_dir)
+
+        _p("清理冗余资源 Cleaning redundant resources...", 0.98)
+        self._cleanup_dist(final_dir)
+
+        _p("清理临时文件 Cleaning temp files...", 0.99)
+        self._cleanup_temp(boot_script)
+
+        _p("构建完成 Build complete!", 1.0)
+        return final_dir
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def _validate(self):
+        bs = os.path.join(
+            self.project_path, "ProjectSettings", "BuildSettings.json"
+        )
+        if not os.path.isfile(bs):
+            raise FileNotFoundError(
+                "BuildSettings.json not found. "
+                "Open Build Settings in the editor and add at least one scene."
+            )
+        with open(bs, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+        scenes = data.get("scenes", [])
+        if not scenes:
+            raise ValueError(
+                "Build list is empty. Add at least one scene in Build Settings."
+            )
+        missing = [s for s in scenes if not os.path.isfile(s)]
+        if missing:
+            names = ", ".join(os.path.basename(m) for m in missing)
+            raise FileNotFoundError(f"Scene file(s) not found: {names}")
+
+    # ------------------------------------------------------------------
+    # Clean output
+    # ------------------------------------------------------------------
+
+    def _clean_output(self):
+        if os.path.exists(self.output_dir):
+            shutil.rmtree(self.output_dir, ignore_errors=True)
+            if os.path.exists(self.output_dir):
+                try:
+                    os.rename(self.output_dir, self.output_dir + "_old")
+                    shutil.rmtree(self.output_dir + "_old", ignore_errors=True)
+                except OSError:
+                    pass
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Generate boot script (temporary, fed to Nuitka)
+    # ------------------------------------------------------------------
+
+    def _generate_boot_script(self) -> str:
+        """Generate the entry script that Nuitka will compile into the EXE.
+
+        Returns the path to the temporary boot script.
+        """
+        boot_src = f'''\
+"""InfEngine Game — compiled entry point."""
+import os
+import sys
+import traceback
+
+# Activate player mode BEFORE any InfEngine imports so the engine
+# package skips heavy editor-only UI panels and watchdog file watcher.
+os.environ["_INFENGINE_PLAYER_MODE"] = "1"
+
+# Determine the directory containing the executable
+_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+if not os.path.isdir(os.path.join(_DIR, "Data")):
+    _DIR = os.path.dirname(os.path.abspath(sys.executable))
+
+_LOG = os.path.join(_DIR, "player.log")
+os.environ["_INFENGINE_PLAYER_LOG"] = _LOG
+
+# Clear previous log
+try:
+    open(_LOG, "w", encoding="utf-8").close()
+except OSError:
+    pass
+
+def _log(msg):
+    try:
+        with open(_LOG, "a", encoding="utf-8") as _f:
+            _f.write(str(msg) + "\\n")
+    except OSError:
+        pass
+
+def _crash_report(exc):
+    """Write crash details to a log file and show a Windows message box."""
+    tb_text = traceback.format_exc()
+    _log("CRASH: " + tb_text)
+    log_path = os.path.join(_DIR, "crash.log")
+    try:
+        with open(log_path, "w", encoding="utf-8") as _f:
+            _f.write(tb_text)
+    except OSError:
+        pass
+    # Try to show a native message box (works even without console)
+    try:
+        import ctypes
+        msg = f"Failed to start.  Details in crash.log\\n\\n" + tb_text[-800:]
+        ctypes.windll.user32.MessageBoxW(0, msg, "InfEngine Error", 0x10)
+    except Exception:
+        pass
+
+try:
+    _log("boot: importing run_player")
+    from InfEngine.engine import run_player
+    from InfEngine.lib import LogLevel
+
+    _log("boot: calling run_player")
+    run_player(
+        project_path=os.path.join(_DIR, "Data"),
+        engine_log_level=LogLevel.Info,
+    )
+    _log("boot: run_player returned")
+except Exception as _exc:
+    _crash_report(_exc)
+    sys.exit(1)
+'''
+        # Write boot script to a temp location (NuitkaBuilder will copy
+        # it into its ASCII-safe staging directory).
+        boot_dir = os.path.join(self.output_dir, "_build_temp")
+        os.makedirs(boot_dir, exist_ok=True)
+        boot_path = os.path.join(boot_dir, "boot.py")
+        with open(boot_path, "w", encoding="utf-8") as f:
+            f.write(boot_src)
+        return boot_path
+
+    # ------------------------------------------------------------------
+    # Nuitka compilation
+    # ------------------------------------------------------------------
+
+    def _run_nuitka(
+        self,
+        boot_script: str,
+        on_progress: Optional[Callable[[str, float], None]],
+        user_packages: Optional[List[str]] = None,
+    ) -> str:
+        """Invoke NuitkaBuilder. Returns the dist directory path."""
+        from InfEngine.resources import icon_path
+
+        nk = NuitkaBuilder(
+            entry_script=boot_script,
+            output_dir=self.output_dir,
+            output_filename=f"{self.project_name}.exe",
+            product_name=self.project_name,
+            icon_path=icon_path if os.path.isfile(icon_path) else None,
+            extra_include_packages=user_packages or [],
+        )
+
+        def _nk_progress(msg: str, pct: float):
+            # Map Nuitka's 0–1 range into our 0.06–0.85 range
+            mapped = 0.06 + pct * 0.79
+            if on_progress:
+                on_progress(msg, mapped)
+
+        return nk.build(on_progress=_nk_progress)
+
+    # ------------------------------------------------------------------
+    # Organize output: move dist contents to the final output directory
+    # ------------------------------------------------------------------
+
+    def _organize_output(self, dist_dir: str) -> str:
+        """Move Nuitka dist contents from staging into self.output_dir.
+
+        The dist_dir lives in an ASCII-safe staging area (e.g.
+        ``C:\\_InfBuild\\<hash>\\boot.dist``).  We move every item
+        into the user's chosen output directory.
+        Returns the final directory path.
+        """
+        final_dir = self.output_dir
+        os.makedirs(final_dir, exist_ok=True)
+
+        for item in os.listdir(dist_dir):
+            src = os.path.join(dist_dir, item)
+            dst = os.path.join(final_dir, item)
+            if os.path.exists(dst):
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst)
+                else:
+                    os.remove(dst)
+            shutil.move(src, dst)
+
+        # Remove the now-empty dist directory and its staging parent
+        staging_parent = os.path.dirname(dist_dir)
+        shutil.rmtree(staging_parent, ignore_errors=True)
+
+        return final_dir
+
+    # ------------------------------------------------------------------
+    # Game data
+    # ------------------------------------------------------------------
+
+    def _copy_game_data(self, final_dir: str):
+        """Copy Assets, ProjectSettings, materials to Data/."""
+        data_dir = os.path.join(final_dir, "Data")
+        ignore = shutil.ignore_patterns(*self._EXCLUDE_PATTERNS)
+        for dirname in self._GAME_DATA_DIRS:
+            src = os.path.join(self.project_path, dirname)
+            dst = os.path.join(data_dir, dirname)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, ignore=ignore)
+
+    # ------------------------------------------------------------------
+    # Collect user script dependencies
+    # ------------------------------------------------------------------
+
+    # Packages that are already bundled by the engine or excluded on
+    # purpose — never add them via --include-package even if a user
+    # script imports them.
+    _BUILTIN_MODULES = frozenset({
+        # Standard library (always available in the Nuitka bundle)
+        *sys.stdlib_module_names,
+        # Engine packages (already followed by Nuitka via boot.py)
+        "InfEngine",
+        # Excluded editor-only / build-only packages
+        "watchdog", "PIL", "cv2", "imageio", "psd_tools",
+        "tkinter", "unittest", "test", "pip", "setuptools",
+        "distutils", "ensurepip",
+    })
+
+    def _collect_user_dependencies(self) -> List[str]:
+        """Scan user scripts for third-party imports and return package names.
+
+        Detection sources (in order of priority):
+        1. ``requirements.txt`` in the project root — explicit user list.
+           Lines starting with ``#`` or empty lines are ignored.
+           Version specifiers are stripped (``torch>=2.0`` → ``torch``).
+        2. AST-based import scanning of all ``.py`` files under ``Assets/``.
+           Only top-level package names are collected (``import a.b`` → ``a``).
+
+        The results are de-duplicated, stdlib/engine names are filtered out,
+        and only packages actually installed in the current environment are
+        returned (to avoid Nuitka errors on typos or conditional imports).
+        """
+        import ast
+        import importlib.util
+        import re
+
+        found: set[str] = set()
+
+        # --- Source 1: project requirements.txt -------------------------
+        req_path = os.path.join(self.project_path, "requirements.txt")
+        if os.path.isfile(req_path):
+            Debug.log_internal(f"Found project requirements.txt: {req_path}")
+            with open(req_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or line.startswith("-"):
+                        continue
+                    # Strip version specifiers: "torch>=2.0" → "torch"
+                    pkg = re.split(r"[><=!;\[]", line, maxsplit=1)[0].strip()
+                    if pkg:
+                        found.add(pkg)
+
+        # --- Source 2: AST import scanning ------------------------------
+        assets_dir = os.path.join(self.project_path, "Assets")
+        if os.path.isdir(assets_dir):
+            for root, _, files in os.walk(assets_dir):
+                for fname in files:
+                    if not fname.endswith(".py"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                            tree = ast.parse(f.read(), filename=fpath)
+                    except SyntaxError:
+                        continue
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Import):
+                            for alias in node.names:
+                                found.add(alias.name.split(".")[0])
+                        elif isinstance(node, ast.ImportFrom):
+                            if node.module and node.level == 0:
+                                found.add(node.module.split(".")[0])
+
+        # --- Filter: remove stdlib / engine / excluded ------------------
+        found -= self._BUILTIN_MODULES
+
+        # Only keep packages that are actually importable in the current
+        # environment so Nuitka doesn't error on stale or optional imports.
+        verified: list[str] = []
+        for pkg in sorted(found):
+            if importlib.util.find_spec(pkg) is not None:
+                verified.append(pkg)
+            else:
+                Debug.log_warning(
+                    f"User script dependency '{pkg}' not installed — skipping"
+                )
+
+        if verified:
+            Debug.log_internal(
+                f"User dependencies to bundle: {', '.join(verified)}"
+            )
+        return verified
+
+    # ------------------------------------------------------------------
+    # Compile user scripts
+    # ------------------------------------------------------------------
+
+    def _compile_user_scripts(self, final_dir: str):
+        """Compile .py in Data/Assets/ to .pyc and remove originals.
+
+        Also generates ``Data/_script_guid_map.json`` so that the
+        player can resolve script GUIDs without the original ``.py``
+        files (the C++ AssetDatabase only recognises ``.py``).
+        """
+        assets_dir = os.path.join(final_dir, "Data", "Assets")
+        if not os.path.isdir(assets_dir):
+            return
+
+        data_dir = os.path.join(final_dir, "Data")
+        guid_map: dict[str, str] = {}
+
+        # First pass: build GUID → .pyc relative-path map from .meta
+        for root, _dirs, files in os.walk(assets_dir):
+            for fname in files:
+                if fname.endswith(".py"):
+                    py_path = os.path.join(root, fname)
+                    meta_path = py_path + ".meta"
+                    if os.path.isfile(meta_path):
+                        try:
+                            with open(meta_path, "r", encoding="utf-8") as mf:
+                                meta = json.load(mf)
+                            guid = (meta.get("metadata", {})
+                                        .get("guid", {})
+                                        .get("value", ""))
+                            if guid:
+                                pyc_rel = os.path.relpath(
+                                    py_path + "c", data_dir
+                                ).replace("\\", "/")
+                                guid_map[guid] = pyc_rel
+                        except (json.JSONDecodeError, OSError):
+                            pass
+
+        # Second pass: compile and remove originals
+        for root, _dirs, files in os.walk(assets_dir):
+            for fname in files:
+                if fname.endswith(".py"):
+                    py_path = os.path.join(root, fname)
+                    try:
+                        py_compile.compile(
+                            py_path,
+                            cfile=py_path + "c",
+                            optimize=2,
+                            doraise=True,
+                        )
+                        os.remove(py_path)
+                    except py_compile.PyCompileError:
+                        pass
+
+        # Write manifest
+        if guid_map:
+            manifest_path = os.path.join(data_dir, "_script_guid_map.json")
+            with open(manifest_path, "w", encoding="utf-8") as mf:
+                json.dump(guid_map, mf)
+
+    # ------------------------------------------------------------------
+    # Splash items
+    # ------------------------------------------------------------------
+
+    def _process_splash_items(self, final_dir: str):
+        """Copy/convert splash items into Data/Splash/."""
+        if not self.splash_items:
+            return
+
+        splash_dir = os.path.join(final_dir, "Data", "Splash")
+        os.makedirs(splash_dir, exist_ok=True)
+
+        for item in self.splash_items:
+            src_path = item.get("path", "")
+            if not os.path.isfile(src_path):
+                Debug.log_warning(f"Splash item not found: {src_path}")
+                continue
+
+            item_type = item.get("type", "image")
+            base_name = os.path.splitext(os.path.basename(src_path))[0]
+
+            if item_type == "video":
+                out_name = base_name + ".infsplash"
+                out_path = os.path.join(splash_dir, out_name)
+                self._extract_video_frames(src_path, out_path)
+                item["_built_path"] = f"Splash/{out_name}"
+            else:
+                ext = os.path.splitext(src_path)[1]
+                out_name = base_name + ext
+                shutil.copy2(src_path, os.path.join(splash_dir, out_name))
+                item["_built_path"] = f"Splash/{out_name}"
+
+    def _extract_video_frames(self, video_path: str, output_path: str):
+        """Extract video frames to .infsplash binary blob."""
+        try:
+            import cv2
+        except ImportError:
+            try:
+                self._extract_with_imageio(video_path, output_path)
+                return
+            except ImportError:
+                raise RuntimeError(
+                    "Video splash requires opencv-python or imageio[ffmpeg]. "
+                    "Install: pip install opencv-python-headless"
+                )
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        frames_data: list[bytes] = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            _, jpeg_buf = cv2.imencode(
+                ".jpg", frame_rgb, [cv2.IMWRITE_JPEG_QUALITY, 85]
+            )
+            frames_data.append(jpeg_buf.tobytes())
+        cap.release()
+
+        self._write_infsplash(output_path, frames_data, fps, width, height)
+
+    def _extract_with_imageio(self, video_path: str, output_path: str):
+        """Fallback using imageio for video frame extraction."""
+        import imageio.v3 as iio
+
+        frames_data: list[bytes] = []
+        width = height = 0
+        for frame in iio.imiter(video_path, plugin="pyav"):
+            height, width = frame.shape[:2]
+            jpeg_bytes = iio.imwrite(
+                "<bytes>", frame, extension=".jpg", quality=85
+            )
+            frames_data.append(jpeg_bytes)
+
+        meta = iio.immeta(video_path, plugin="pyav")
+        fps = meta.get("fps", 30.0) or 30.0
+        self._write_infsplash(output_path, frames_data, fps, width, height)
+
+    @staticmethod
+    def _write_infsplash(
+        path: str, frames: list, fps: float, width: int, height: int
+    ):
+        """Write .infsplash binary (magic + header + index + JPEG data)."""
+        with open(path, "wb") as f:
+            f.write(b"INFSPLSH")
+            f.write(struct.pack("<IfII", len(frames), fps, width, height))
+            offset = 0
+            for data in frames:
+                f.write(struct.pack("<II", offset, len(data)))
+                offset += len(data)
+            for data in frames:
+                f.write(data)
+
+    # ------------------------------------------------------------------
+    # Relativize scene paths
+    # ------------------------------------------------------------------
+
+    def _relativize_scenes(self, final_dir: str):
+        bs = os.path.join(
+            final_dir, "Data", "ProjectSettings", "BuildSettings.json"
+        )
+        if not os.path.isfile(bs):
+            return
+        with open(bs, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+
+        scenes = data.get("scenes", [])
+        rel_scenes = []
+        for scene_path in scenes:
+            try:
+                rel = os.path.relpath(scene_path, self.project_path)
+            except ValueError:
+                rel = os.path.basename(scene_path)
+            rel_scenes.append(rel.replace("\\", "/"))
+        data["scenes"] = rel_scenes
+
+        with open(bs, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Generate BuildManifest.json
+    # ------------------------------------------------------------------
+
+    def _generate_manifest(self, final_dir: str):
+        """Write BuildManifest.json with display mode, splash config, etc."""
+        bs = os.path.join(
+            final_dir, "Data", "ProjectSettings", "BuildSettings.json"
+        )
+        scenes = []
+        if os.path.isfile(bs):
+            with open(bs, "r", encoding="utf-8", errors="replace") as f:
+                scenes = json.load(f).get("scenes", [])
+
+        splash_runtime = []
+        for item in self.splash_items:
+            built = item.get("_built_path")
+            if not built:
+                continue
+            splash_runtime.append({
+                "type": item.get("type", "image"),
+                "path": built,
+                "duration": item.get("duration", 3.0),
+                "fade_in": item.get("fade_in", 0.5),
+                "fade_out": item.get("fade_out", 0.5),
+            })
+
+        manifest = {
+            "display_mode": self.display_mode,
+            "window_width": self.window_width,
+            "window_height": self.window_height,
+            "scenes": scenes,
+            "splash_items": splash_runtime,
+        }
+
+        manifest_path = os.path.join(final_dir, "Data", "BuildManifest.json")
+        os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+
+    def _cleanup_dist(self, final_dir: str):
+        """Remove editor-only and redundant files from the build output."""
+        removed_bytes = 0
+
+        # Directories that are entirely unnecessary at runtime
+        remove_dirs = [
+            os.path.join(final_dir, "InfEngine", "lib", "_player_runtime"),
+            os.path.join(final_dir, "InfEngine", "resources", "icons"),
+            os.path.join(final_dir, "InfEngine", "resources", "supports"),
+        ]
+        for d in remove_dirs:
+            if os.path.isdir(d):
+                for r, _, fs in os.walk(d):
+                    for f in fs:
+                        removed_bytes += os.path.getsize(os.path.join(r, f))
+                shutil.rmtree(d, ignore_errors=True)
+
+        # Individual files not needed at runtime
+        remove_files = [
+            os.path.join(final_dir, "InfEngine", "lib", "_InfEngine.pyi"),
+            os.path.join(final_dir, "InfEngine", "lib", "InfEngineLauncher.exe"),
+            os.path.join(final_dir, "Data", "ProjectSettings", "EditorSettings.json"),
+            os.path.join(final_dir, "Data", "ProjectSettings", "GameView.ini"),
+        ]
+        for f in remove_files:
+            if os.path.isfile(f):
+                removed_bytes += os.path.getsize(f)
+                os.remove(f)
+
+        # Remove .meta files from engine shaders (editor hot-reload metadata)
+        shaders_dir = os.path.join(final_dir, "InfEngine", "resources", "shaders")
+        if os.path.isdir(shaders_dir):
+            for root, _, files in os.walk(shaders_dir):
+                for fname in files:
+                    if fname.endswith(".meta"):
+                        fp = os.path.join(root, fname)
+                        removed_bytes += os.path.getsize(fp)
+                        os.remove(fp)
+
+        mb = removed_bytes / (1024 * 1024)
+        Debug.log_internal(f"Cleaned {mb:.1f} MB of redundant files from build")
+
+    @staticmethod
+    def _cleanup_temp(boot_script: str):
+        """Remove the temporary boot script directory."""
+        boot_dir = os.path.dirname(boot_script)
+        if os.path.isdir(boot_dir):
+            shutil.rmtree(boot_dir, ignore_errors=True)

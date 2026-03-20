@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from InfEngine.lib import Vector2 as Vector2, Vector3 as Vector3, vec4f as vec4f, quatf as quatf
+from InfEngine.math.vector import (
+    vector2 as vector2,
+    vector3 as vector3,
+    vector4 as vector4,
+    quaternion as quaternion,
+)
+
+__all__ = [
+    "vector2",
+    "vector3",
+    "vector4",
+    "quaternion",
+]

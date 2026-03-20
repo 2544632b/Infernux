@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docs — Infernux Engine</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/wiki.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="index.html" data-i18n="nav.home">Home</a>
+                <a href="index.html#system" data-i18n="nav.features">Features</a>
+                <a href="index.html#capabilities" data-i18n="nav.showcase">Showcase</a>
+                <a href="index.html#difference" data-i18n="nav.comparison">Comparison</a>
+                <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
+                <a href="wiki.html" class="active" data-i18n="nav.docs">Docs</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank" rel="noopener">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button class="lang-toggle" onclick="toggleLanguage()">
+                    <span id="lang-text">中文</span>
+                </button>
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="page-shell hub-layout">
+        <div class="container">
+            <section class="hub-hero">
+                <div class="kicker" data-i18n="wiki.hero.kicker">Documentation hub</div>
+                <h1 data-i18n="wiki.hero.title">Documentation should reduce uncertainty, not merely prove that docs exist.</h1>
+                <p data-i18n="wiki.hero.description">Use this page as the starting map into tutorials, architecture notes, API reference, release planning, and repository-level onboarding.</p>
+                <div class="hub-actions">
+                    <a href="wiki/site/en/index.html" class="btn btn-primary" data-i18n="wiki.hero.primary">Open tutorial docs</a>
+                    <a href="../README.md" class="btn btn-secondary" data-i18n="wiki.hero.secondary">Open README</a>
+                </div>
+            </section>
+
+            <section class="hub-grid docs-entry-grid">
+                <a href="wiki/site/en/index.html" class="hub-card">
+                    <div class="card-mark"><i class="fas fa-compass"></i></div>
+                    <h3 data-i18n="wiki.card1.title">Start here</h3>
+                    <p data-i18n="wiki.card1.body">Entry-level tutorials, environment setup, project creation, component basics, and first-scene workflow.</p>
+                </a>
+                <a href="wiki/site/en/api/index.html" class="hub-card">
+                    <div class="card-mark"><i class="fas fa-book-open"></i></div>
+                    <h3 data-i18n="wiki.card2.title">API reference</h3>
+                    <p data-i18n="wiki.card2.body">Class-by-class scripting reference for runtime objects, editor-facing APIs, math helpers, and rendering modules.</p>
+                </a>
+                <a href="../README.md" class="hub-card">
+                    <div class="card-mark"><i class="fab fa-github"></i></div>
+                    <h3 data-i18n="wiki.card3.title">Repository README</h3>
+                    <p data-i18n="wiki.card3.body">Project overview, quick start, current scope, build instructions, and contributor-facing orientation.</p>
+                </a>
+                <a href="roadmap.html" class="hub-card">
+                    <div class="card-mark"><i class="fas fa-route"></i></div>
+                    <h3 data-i18n="wiki.card4.title">Roadmap view</h3>
+                    <p data-i18n="wiki.card4.body">A version-oriented planning page that explains what is finished, what is next, and what still blocks a fuller release path.</p>
+                </a>
+                <a href="https://github.com/ChenlizheMe/InfEngine/issues" class="hub-card" target="_blank" rel="noopener">
+                    <div class="card-mark"><i class="fas fa-bug"></i></div>
+                    <h3 data-i18n="wiki.card5.title">Issue tracker</h3>
+                    <p data-i18n="wiki.card5.body">Use the issue tracker when the docs stop being enough and the actual engineering state needs to be inspected or discussed.</p>
+                </a>
+                <a href="https://github.com/ChenlizheMe/InfEngine/discussions" class="hub-card" target="_blank" rel="noopener">
+                    <div class="card-mark"><i class="fas fa-comments"></i></div>
+                    <h3 data-i18n="wiki.card6.title">Discussions</h3>
+                    <p data-i18n="wiki.card6.body">Broader design questions, contribution ideas, and architecture conversations that do not fit into a bug report.</p>
+                </a>
+            </section>
+
+            <section class="docs-principles">
+                <div class="section-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="wiki.principles.kicker">Reading model</div>
+                        <h2 class="section-title" data-i18n="wiki.principles.title">How to navigate the project without wasting time.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="wiki.principles.intro">Different readers need different entry points. This page separates onboarding, deep reference, and planning so the documentation is useful to both users and contributors.</p>
+                </div>
+                <div class="principles-grid">
+                    <article class="principle-card">
+                        <div class="card-mark"><i class="fas fa-play"></i></div>
+                        <h3 data-i18n="wiki.principles.card1.title">If you want to use the engine</h3>
+                        <p data-i18n="wiki.principles.card1.body">Start with the tutorial docs and README. They cover setup, build flow, project layout, and the scripting surface that matters first.</p>
+                    </article>
+                    <article class="principle-card">
+                        <div class="card-mark"><i class="fas fa-code-branch"></i></div>
+                        <h3 data-i18n="wiki.principles.card2.title">If you want to modify the engine</h3>
+                        <p data-i18n="wiki.principles.card2.body">Move from README into the architecture docs and then inspect the code. The design intent is visible, but the source remains the authority.</p>
+                    </article>
+                    <article class="principle-card">
+                        <div class="card-mark"><i class="fas fa-flag-checkered"></i></div>
+                        <h3 data-i18n="wiki.principles.card3.title">If you want to judge project maturity</h3>
+                        <p data-i18n="wiki.principles.card3.body">Read the roadmap together with the README. One tells you what exists today, the other tells you what the next constraints are.</p>
+                    </article>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <div class="nav-logo">
+                        <span class="logo-icon">🔥</span>
+                        <span class="logo-text">Infernux Engine</span>
+                    </div>
+                    <p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-column">
+                        <h4 data-i18n="footer.resources">Resources</h4>
+                        <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
+                        <a href="../README.md">README</a>
+                    </div>
+                    <div class="footer-column">
+                        <h4 data-i18n="footer.community">Community</h4>
+                        <a href="https://github.com/ChenlizheMe/InfEngine/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a>
+                        <a href="https://github.com/ChenlizheMe/InfEngine/discussions" target="_blank" rel="noopener" data-i18n="footer.discussions">Discussions</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">&copy; 2024-2026 Lizhe Chen. MIT License.</div>
+        </div>
+    </footer>
+
+    <script src="js/i18n.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

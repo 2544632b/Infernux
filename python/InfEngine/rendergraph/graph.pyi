@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+from enum import IntEnum
+from typing import Optional, Tuple, List, Dict
+
+from InfEngine.lib import (
+    RenderGraphDescription,
+    GraphPassDesc,
+    GraphTextureDesc,
+    GraphPassActionType,
+    VkFormat,
+)
+
+
+class Format(IntEnum):
+    """Texture format for render targets."""
+
+    RGBA8_UNORM = 37
+    RGBA8_SRGB = 43
+    BGRA8_UNORM = 44
+    RGBA16_SFLOAT = 97
+    RGBA32_SFLOAT = 109
+    R32_SFLOAT = 100
+    R8_UNORM = 9
+    R8G8_UNORM = 16
+    RG16_SFLOAT = 83
+    A2R10G10B10_UNORM = 58
+    R16_SFLOAT = 76
+    D32_SFLOAT = 126
+    D24_UNORM_S8_UINT = 129
+
+    @property
+    def is_depth(self) -> bool:
+        """Returns True if this format is a depth format."""
+        ...
+
+
+class TextureHandle:
+    """A handle to a transient texture resource in the render graph."""
+
+    name: str
+    format: Format
+    is_camera_target: bool
+    size: Optional[Tuple[int, int]]
+    size_divisor: int
+
+    def __init__(
+        self,
+        name: str,
+        format: Format,
+        is_camera_target: bool = ...,
+        size: Optional[Tuple[int, int]] = ...,
+        size_divisor: int = ...,
+    ) -> None: ...
+    @property
+    def is_depth(self) -> bool:
+        """Returns True if this texture uses a depth format."""
+        ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+
+class RenderPassBuilder:
+    """Fluent builder for constructing a render pass."""
+
+    def __init__(self, name: str, graph: RenderGraph | None = ...) -> None: ...
+    @property
+    def name(self) -> str:
+        """The name of this render pass."""
+        ...
+    def read(self, texture: str | TextureHandle) -> RenderPassBuilder:
+        """Declare a texture as a read dependency for this pass."""
+        ...
+    def write_color(self, texture: str | TextureHandle, slot: int = ...) -> RenderPassBuilder:
+        """Declare a color attachment output for this pass."""
+        ...
+    def write_depth(self, texture: str | TextureHandle) -> RenderPassBuilder:
+        """Declare a depth attachment output for this pass."""
+        ...
+    def set_texture(self, sampler_name: str, texture: str | TextureHandle) -> RenderPassBuilder:
+        """Bind a texture to a sampler input for this pass."""
+        ...
+    def set_clear(
+        self,
+        color: Optional[Tuple[float, float, float, float]] = ...,
+        depth: Optional[float] = ...,
+    ) -> RenderPassBuilder:
+        """Set clear values for color and/or depth attachments."""
+        ...
+    def draw_renderers(
+        self,
+        queue_range: Tuple[int, int] = ...,
+        sort_mode: str = ...,
+        pass_tag: str = ...,
+        override_material: str = ...,
+    ) -> RenderPassBuilder:
+        """Draw visible renderers filtered by queue range."""
+        ...
+    def draw_skybox(self) -> RenderPassBuilder:
+        """Draw the skybox in this pass."""
+        ...
+    def draw_shadow_casters(
+        self,
+        queue_range: Tuple[int, int] = ...,
+        light_index: int = ...,
+        shadow_type: str = ...,
+    ) -> RenderPassBuilder:
+        """Draw shadow-casting geometry for a light."""
+        ...
+    def draw_screen_ui(
+        self,
+        list: str | int = ...,
+    ) -> RenderPassBuilder:
+        """Draw screen-space UI elements in this pass."""
+        ...
+    def fullscreen_quad(
+        self,
+        shader: str,
+        **push_constants: float,
+    ) -> RenderPassBuilder:
+        """Draw a fullscreen quad with the specified shader."""
+        ...
+    def __enter__(self) -> RenderPassBuilder: ...
+    def __exit__(self, *args: object) -> None: ...
+    def __repr__(self) -> str: ...
+
+
+class RenderGraph:
+    """A declarative render graph that defines texture resources and render passes."""
+
+    def __init__(self, name: str = ...) -> None: ...
+    @property
+    def name(self) -> str:
+        """The name of this render graph."""
+        ...
+    @property
+    def pass_count(self) -> int:
+        """Number of render passes in the graph."""
+        ...
+    @property
+    def texture_count(self) -> int:
+        """Number of texture resources in the graph."""
+        ...
+    @property
+    def topology_sequence(self) -> List[Tuple[str, str]]:
+        """Ordered list of (pass_name, type) entries defining the execution order."""
+        ...
+    @property
+    def injection_points(self) -> list:
+        """List of injection points for pass extension."""
+        ...
+    def set_msaa_samples(self, samples: int) -> None:
+        """Set the MSAA sample count for all render targets."""
+        ...
+    def create_texture(
+        self,
+        name: str,
+        *,
+        format: Format = ...,
+        camera_target: bool = ...,
+        size: Optional[Tuple[int, int]] = ...,
+        size_divisor: int = ...,
+    ) -> TextureHandle:
+        """Declare a transient texture resource in the render graph."""
+        ...
+    def get_texture(self, name: str) -> Optional[TextureHandle]:
+        """Get a texture handle by name, or None if not found."""
+        ...
+    def has_pass(self, name: str) -> bool:
+        """Check if a render pass with the given name exists."""
+        ...
+    def has_injection_point(self, name: str) -> bool:
+        """Check if an injection point with the given name exists."""
+        ...
+    def injection_point(
+        self,
+        name: str,
+        *,
+        display_name: str = ...,
+        resources: Optional[set] = ...,
+    ) -> None:
+        """Declare an injection point where external passes can be inserted."""
+        ...
+    def screen_ui_section(self, *, resources: set | None = ...) -> None:
+        """Declare a screen UI section in the graph topology."""
+        ...
+    def add_pass(self, name: str) -> RenderPassBuilder:
+        """Add a new render pass to the graph."""
+        ...
+    def remove_pass(self, name: str) -> RenderPassBuilder | None:
+        """Remove a render pass by name. Returns the removed builder, or None."""
+        ...
+    def append_pass(self, builder: RenderPassBuilder) -> None:
+        """Append an existing RenderPassBuilder to the graph."""
+        ...
+    def set_output(self, texture: str | TextureHandle) -> None:
+        """Set the final output texture of the render graph."""
+        ...
+    def validate_no_ip_before_first_pass(self) -> None:
+        """Validate that no injection point appears before the first pass."""
+        ...
+    def build(self) -> RenderGraphDescription:
+        """Compile the graph into a RenderGraphDescription for the backend."""
+        ...

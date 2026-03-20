@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Material - InfEngine Scripting API</title>
+    <link rel="icon" type="image/svg+xml" href="/InfEngine/assets/favicon.svg">
+    <link rel="stylesheet" href="/InfEngine/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* ======================================================
+           InfEngine API Reference — Unity-Inspired Dark Theme
+           ====================================================== */
+
+        /* Layout */
+        .api-layout {
+            display: flex;
+            min-height: calc(100vh - var(--nav-height));
+            padding-top: var(--nav-height);
+        }
+
+        /* ---- Sidebar ---- */
+        .api-sidebar {
+            width: 280px;
+            background: #0b0b12;
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: var(--nav-height);
+            height: calc(100vh - var(--nav-height));
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .api-sidebar::-webkit-scrollbar { width: 5px; }
+        .api-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .api-sidebar::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+        .sidebar-hdr {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .sidebar-hdr h3 {
+            margin: 0;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+        }
+
+        /* Language toggle */
+        .lang-sw {
+            display: flex;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .lang-sw a {
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-elevated);
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .lang-sw a.on {
+            background: var(--primary);
+            color: #fff;
+        }
+        .lang-sw a:hover:not(.on) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* Namespace tree */
+        .ns-tree { padding: 6px 0 20px; }
+
+        .ns-group { margin-bottom: 1px; }
+
+        .ns-hd {
+            display: flex;
+            align-items: center;
+            padding: 7px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .ns-hd:hover { background: rgba(255,255,255,0.025); }
+
+        .ns-arr {
+            width: 14px;
+            font-size: 0.5rem;
+            color: #555;
+            transition: transform 0.15s;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .ns-hd.open .ns-arr { transform: rotate(90deg); }
+
+        .ns-nm {
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .ns-hd.hi .ns-nm { color: var(--primary); }
+
+        .ns-ch {
+            display: none;
+            padding: 2px 0 4px;
+        }
+        .ns-hd.open + .ns-ch { display: block; }
+
+        .ns-ch a {
+            display: block;
+            padding: 3px 16px 3px 38px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.1s, background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .ns-ch a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+        .ns-ch a.cur {
+            color: var(--text-primary);
+            background: rgba(255,107,53,0.07);
+            border-left-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ---- Content ---- */
+        .api-main {
+            flex: 1;
+            padding: 36px 56px 80px;
+            max-width: 880px;
+            min-width: 0;
+        }
+
+        /* H1 — class name */
+        .api-main h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin: 0 0 4px;
+            padding: 0;
+            border: none;
+            color: var(--text-primary);
+        }
+
+        /* "class in Package" subtitle */
+        .api-main .class-info {
+            font-size: 0.88rem;
+            color: var(--text-muted);
+            margin-bottom: 22px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .api-main .class-info b { color: var(--text-secondary); }
+        .api-main .class-info a { color: var(--primary); }
+
+        /* H2 — section headers */
+        .api-main h2 {
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin: 30px 0 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .api-main h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin: 18px 0 6px;
+        }
+
+        /* Paragraphs */
+        .api-main p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.75;
+            margin-bottom: 12px;
+        }
+
+        .api-main blockquote {
+            margin: 12px 0;
+            padding: 10px 16px;
+            background: rgba(255,107,53,0.04);
+            border-left: 3px solid var(--primary);
+            border-radius: 0 4px 4px 0;
+        }
+        .api-main blockquote p { margin: 0; font-size: 0.85rem; }
+
+        /* Tables — Unity style: hidden header, 2-col */
+        .api-main table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 4px 0 18px;
+        }
+        .api-main thead { display: none; }
+
+        .api-main tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .api-main tbody tr:last-child { border-bottom: none; }
+
+        .api-main td {
+            padding: 7px 0;
+            font-size: 0.86rem;
+            vertical-align: top;
+        }
+        .api-main td:first-child {
+            width: 200px;
+            padding-right: 20px;
+            color: var(--primary);
+            font-size: 0.86rem;
+            font-weight: 500;
+        }
+        .api-main td:last-child { color: var(--text-secondary); }
+        .api-main td a { color: var(--primary); }
+        .api-main tbody tr:hover { background: rgba(255,255,255,0.012); }
+
+        /* Inline code — normal font, subtle highlight */
+        .api-main code {
+            font-family: inherit;
+            font-size: inherit;
+            background: rgba(255,255,255,0.06);
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: var(--primary-light);
+        }
+
+        /* Code blocks */
+        .api-main pre {
+            background: #0d0d15;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 10px 0 18px;
+        }
+        .api-main pre code {
+            font-family: var(--font-mono);
+            background: none;
+            padding: 0;
+            font-size: 0.83rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+        }
+
+        /* Lists */
+        .api-main ul, .api-main ol { padding-left: 18px; margin-bottom: 12px; }
+        .api-main li {
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .api-main hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 26px 0;
+        }
+
+        /* ---- Footer ---- */
+        .api-ft { margin-left: 280px; }
+        .api-ft .footer-bottom p { font-size: 0.8rem; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1024px) {
+            .api-sidebar { width: 240px; }
+            .api-main { padding: 28px 32px 60px; }
+            .api-ft { margin-left: 240px; }
+        }
+        @media (max-width: 768px) {
+            .api-layout { flex-direction: column; }
+            .api-sidebar {
+                width: 100%; position: relative; top: 0;
+                height: auto; max-height: 50vh;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .api-main { padding: 20px; max-width: 100%; }
+            .api-ft { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/InfEngine/" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="/InfEngine/">Home</a>
+                <a href="/InfEngine/#features">Features</a>
+                <a href="/InfEngine/roadmap.html">Roadmap</a>
+                <a href="/InfEngine/wiki/site/en/api/index.html" class="active">API Reference</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- API Reference Layout -->
+    <div class="api-layout">
+        <!-- Sidebar — namespace / package tree -->
+        <aside class="api-sidebar">
+            <div class="sidebar-hdr">
+                <h3>Scripting API</h3>
+                <div class="lang-sw">
+                    <a href="/InfEngine/wiki/site/en/api/index.html"
+                       class="on">EN</a>
+                    <a href="/InfEngine/wiki/site/zh/api/index.html"
+                       class="">中文</a>
+                </div>
+            </div>
+
+            <div class="ns-tree"><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/en/api/Component.html" class="">Component</a><a href="/InfEngine/wiki/site/en/api/GameObject.html" class="">GameObject</a><a href="/InfEngine/wiki/site/en/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/en/api/Scene.html" class="">Scene</a><a href="/InfEngine/wiki/site/en/api/SceneManager.html" class="">SceneManager</a><a href="/InfEngine/wiki/site/en/api/Transform.html" class="">Transform</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/InfComponent.html" class="">InfComponent</a><a href="/InfEngine/wiki/site/en/api/add_component_menu.html" class="">add_component_menu</a><a href="/InfEngine/wiki/site/en/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/InfEngine/wiki/site/en/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/InfEngine/wiki/site/en/api/require_component.html" class="">require_component</a><a href="/InfEngine/wiki/site/en/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components.builtin</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/en/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd open hi">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.core</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Material.html" class="cur">Material</a><a href="/InfEngine/wiki/site/en/api/MeshData.html" class="">MeshData</a><a href="/InfEngine/wiki/site/en/api/Shader.html" class="">Shader</a><a href="/InfEngine/wiki/site/en/api/Texture.html" class="">Texture</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.debug</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Debug.html" class="">Debug</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.gizmos</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Gizmos.html" class="">Gizmos</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.input</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Input.html" class="">Input</a><a href="/InfEngine/wiki/site/en/api/KeyCode.html" class="">KeyCode</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.math</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/vector2.html" class="">vector2</a><a href="/InfEngine/wiki/site/en/api/vector3.html" class="">vector3</a><a href="/InfEngine/wiki/site/en/api/vector4.html" class="">vector4</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.scene</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/SceneManager.html" class="">SceneManager</a></div>
+                    </div></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="api-main">
+            <h1 id="material">Material<a class="headerlink" href="#material" title="Permanent link">&para;</a></h1>
+<div class="class-info">
+class in <b>InfEngine.core</b>
+</div>
+
+<h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
+<p>Pythonic wrapper around C++ InfMaterial.</p>
+<!-- USER CONTENT START -->
+<p>description</p>
+<p>Material defines the visual appearance of rendered geometry, controlling shading, color, textures, and render state. Each Material references a <a href="Shader.html">Shader</a> program and provides a set of properties (uniforms) that feed into that shader.</p>
+<p>Create materials with the factory methods <code>Material.create_lit()</code> for physically-based rendering or <code>Material.create_unlit()</code> for flat shading with no lighting calculations. Set uniform values through typed methods: <code>set_color()</code> for RGBA colors, <code>set_float()</code> for numeric parameters, <code>set_texture_guid()</code> for texture maps, and <code>set_vector3()</code> / <code>set_vector4()</code> for vector values.</p>
+<p>Render state — such as culling mode, blend mode, depth testing, and surface type — is configured through dedicated properties. Materials are assigned to a <a href="MeshRenderer.html">MeshRenderer</a> to take effect.</p>
+<!-- USER CONTENT END -->
+
+<h2 id="constructors">Constructors<a class="headerlink" href="#constructors" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Material.__init__(native: InfMaterial) → None</code></td>
+<td>Wrap an existing C++ InfMaterial.</td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>constructors</p>
+<!-- USER CONTENT END -->
+
+<h2 id="properties">Properties<a class="headerlink" href="#properties" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>native</td>
+<td><code>InfMaterial</code></td>
+<td>The underlying C++ InfMaterial object. <em>(read-only)</em></td>
+</tr>
+<tr>
+<td>name</td>
+<td><code>str</code></td>
+<td>The display name of the material.</td>
+</tr>
+<tr>
+<td>guid</td>
+<td><code>str</code></td>
+<td>The globally unique identifier for this material. <em>(read-only)</em></td>
+</tr>
+<tr>
+<td>render_queue</td>
+<td><code>int</code></td>
+<td>The render queue priority for draw order sorting.</td>
+</tr>
+<tr>
+<td>shader_name</td>
+<td><code>str</code></td>
+<td>The name of the shader program used by this material.</td>
+</tr>
+<tr>
+<td>vert_shader_name</td>
+<td><code>str</code></td>
+<td>The vertex shader name override.</td>
+</tr>
+<tr>
+<td>frag_shader_name</td>
+<td><code>str</code></td>
+<td>The fragment shader name override.</td>
+</tr>
+<tr>
+<td>is_builtin</td>
+<td><code>bool</code></td>
+<td>Whether this is a built-in engine material. <em>(read-only)</em></td>
+</tr>
+<tr>
+<td>render_state_overrides</td>
+<td><code>int</code></td>
+<td>Bitmask of render state overrides applied to this material.</td>
+</tr>
+<tr>
+<td>cull_mode</td>
+<td><code>int</code></td>
+<td>The face culling mode (0=None, 1=Front, 2=Back).</td>
+</tr>
+<tr>
+<td>depth_write_enable</td>
+<td><code>bool</code></td>
+<td>Whether depth buffer writing is enabled.</td>
+</tr>
+<tr>
+<td>depth_test_enable</td>
+<td><code>bool</code></td>
+<td>Whether depth testing is enabled.</td>
+</tr>
+<tr>
+<td>depth_compare_op</td>
+<td><code>int</code></td>
+<td>The depth comparison operator.</td>
+</tr>
+<tr>
+<td>blend_enable</td>
+<td><code>bool</code></td>
+<td>Whether alpha blending is enabled.</td>
+</tr>
+<tr>
+<td>surface_type</td>
+<td><code>str</code></td>
+<td>The surface type ('opaque' or 'transparent').</td>
+</tr>
+<tr>
+<td>alpha_clip_enabled</td>
+<td><code>bool</code></td>
+<td>Whether alpha clipping (cutout) is enabled.</td>
+</tr>
+<tr>
+<td>alpha_clip_threshold</td>
+<td><code>float</code></td>
+<td>The alpha value threshold for clipping.</td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>properties</p>
+<!-- USER CONTENT END -->
+
+<h2 id="public-methods">Public Methods<a class="headerlink" href="#public-methods" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dispose() → None</code></td>
+<td>Release the underlying native material resources.</td>
+</tr>
+<tr>
+<td><code>set_shader(shader_name: str) → None</code></td>
+<td>Set the shader used by this material.</td>
+</tr>
+<tr>
+<td><code>set_float(name: str, value: float) → None</code></td>
+<td>Set a float uniform property on the material.</td>
+</tr>
+<tr>
+<td><code>set_int(name: str, value: int) → None</code></td>
+<td>Set an integer uniform property on the material.</td>
+</tr>
+<tr>
+<td><code>set_color(name: str, r: float, g: float, b: float, a: float = ...) → None</code></td>
+<td>Set a color uniform property on the material.</td>
+</tr>
+<tr>
+<td><code>set_vector2(name: str, x: float, y: float) → None</code></td>
+<td>Set a 2D vector uniform property on the material.</td>
+</tr>
+<tr>
+<td><code>set_vector3(name: str, x: float, y: float, z: float) → None</code></td>
+<td>Set a 3D vector uniform property on the material.</td>
+</tr>
+<tr>
+<td><code>set_vector4(name: str, x: float, y: float, z: float, w: float) → None</code></td>
+<td>Set a 4D vector uniform property on the material.</td>
+</tr>
+<tr>
+<td><code>set_texture_guid(name: str, texture_guid: str) → None</code></td>
+<td>Assign a texture to a sampler slot by GUID.</td>
+</tr>
+<tr>
+<td><code>clear_texture(name: str) → None</code></td>
+<td>Remove the texture assigned to a sampler slot.</td>
+</tr>
+<tr>
+<td><code>get_float(name: str, default: float = ...) → float</code></td>
+<td>Get a float uniform property value.</td>
+</tr>
+<tr>
+<td><code>get_int(name: str, default: int = ...) → int</code></td>
+<td>Get an integer uniform property value.</td>
+</tr>
+<tr>
+<td><code>get_color(name: str) → Tuple[float, float, float, float]</code></td>
+<td>Get a color property as an (R, G, B, A) tuple.</td>
+</tr>
+<tr>
+<td><code>get_vector2(name: str) → Tuple[float, float]</code></td>
+<td>Get a 2D vector property as an (X, Y) tuple.</td>
+</tr>
+<tr>
+<td><code>get_vector3(name: str) → Tuple[float, float, float]</code></td>
+<td>Get a 3D vector property as an (X, Y, Z) tuple.</td>
+</tr>
+<tr>
+<td><code>get_vector4(name: str) → Tuple[float, float, float, float]</code></td>
+<td>Get a 4D vector property as an (X, Y, Z, W) tuple.</td>
+</tr>
+<tr>
+<td><code>get_texture(name: str) → Optional[str]</code></td>
+<td>Get the GUID of the texture assigned to a sampler slot.</td>
+</tr>
+<tr>
+<td><code>has_property(name: str) → bool</code></td>
+<td>Check whether a shader property exists on this material.</td>
+</tr>
+<tr>
+<td><code>get_property(name: str) → Any</code></td>
+<td>Get a shader property value by name.</td>
+</tr>
+<tr>
+<td><code>get_all_properties() → dict</code></td>
+<td>Get all shader properties as a dictionary.</td>
+</tr>
+<tr>
+<td><code>to_dict() → dict</code></td>
+<td>Serialize the material to a dictionary.</td>
+</tr>
+<tr>
+<td><code>save(file_path: str) → bool</code></td>
+<td>Save the material to a file.</td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>public_methods</p>
+<!-- USER CONTENT END -->
+
+<h2 id="static-methods">Static Methods<a class="headerlink" href="#static-methods" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>static Material.create_lit(name: str = ...) → Material</code></td>
+<td>Create a new material with the default lit (PBR) shader.</td>
+</tr>
+<tr>
+<td><code>static Material.create_unlit(name: str = ...) → Material</code></td>
+<td>Create a new material with the unlit shader.</td>
+</tr>
+<tr>
+<td><code>static Material.from_native(native: InfMaterial) → Material</code></td>
+<td>Wrap an existing C++ InfMaterial instance.</td>
+</tr>
+<tr>
+<td><code>static Material.load(file_path: str) → Optional[Material]</code></td>
+<td>Load a material from a file path.</td>
+</tr>
+<tr>
+<td><code>static Material.get(name: str) → Optional[Material]</code></td>
+<td>Get a cached material by name.</td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>static_methods</p>
+<!-- USER CONTENT END -->
+
+<h2 id="operators">Operators<a class="headerlink" href="#operators" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__repr__() → str</code></td>
+<td><code>str</code></td>
+</tr>
+<tr>
+<td><code>__eq__(other: object) → bool</code></td>
+<td><code>bool</code></td>
+</tr>
+<tr>
+<td><code>__hash__() → int</code></td>
+<td><code>int</code></td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>operators</p>
+<!-- USER CONTENT END -->
+
+<h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
+<!-- USER CONTENT START -->
+<p>example</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine</span><span class="w"> </span><span class="kn">import</span> <span class="n">InfComponent</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.resources</span><span class="w"> </span><span class="kn">import</span> <span class="n">Material</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">MaterialDemo</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="c1"># Create a lit (PBR) material</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">mat</span> <span class="o">=</span> <span class="n">Material</span><span class="o">.</span><span class="n">create_lit</span><span class="p">()</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">mat</span><span class="o">.</span><span class="n">set_color</span><span class="p">(</span><span class="s2">&quot;_BaseColor&quot;</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>  <span class="c1"># red tint</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">mat</span><span class="o">.</span><span class="n">set_float</span><span class="p">(</span><span class="s2">&quot;_Metallic&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="n">mat</span><span class="o">.</span><span class="n">set_float</span><span class="p">(</span><span class="s2">&quot;_Roughness&quot;</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">)</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="c1"># Apply to the renderer</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="n">renderer</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_cpp_component</span><span class="p">(</span><span class="s2">&quot;MeshRenderer&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        <span class="k">if</span> <span class="n">renderer</span><span class="p">:</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>            <span class="n">renderer</span><span class="o">.</span><span class="n">render_material</span> <span class="o">=</span> <span class="n">mat</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="c1"># Create an unlit material for UI-like elements</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        <span class="n">unlit</span> <span class="o">=</span> <span class="n">Material</span><span class="o">.</span><span class="n">create_unlit</span><span class="p">()</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        <span class="n">unlit</span><span class="o">.</span><span class="n">set_color</span><span class="p">(</span><span class="s2">&quot;_BaseColor&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+</code></pre></div>
+<!-- USER CONTENT END -->
+
+<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<!-- USER CONTENT START -->
+<p>see_also</p>
+<ul>
+<li><a href="Shader.html">Shader</a></li>
+<li><a href="Texture.html">Texture</a></li>
+<li><a href="MeshRenderer.html">MeshRenderer</a></li>
+<li><a href="Light.html">Light</a></li>
+</ul>
+<!-- USER CONTENT END -->
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer api-ft">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="/InfEngine/js/main.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.ns-hd').forEach(function(h) {
+            h.addEventListener('click', function() { this.classList.toggle('open'); });
+        });
+    });
+    </script>
+</body>
+</html>

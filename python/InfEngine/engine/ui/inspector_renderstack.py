@@ -1,0 +1,647 @@
+"""Custom Inspector renderer for the RenderStack component.
+
+Displays the pipeline topology with injection points, each having an
+'Add Effect' button to add post-processing effects via a categorised popup menu
+(similar to Unity's GlobalVolume system).
+
+Mounted effects are displayed as collapsible sections with editable
+parameters, regardless of whether the effect is enabled or disabled.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, TYPE_CHECKING
+
+from InfEngine.lib import InfGUIContext
+from .inspector_utils import (
+    max_label_w, field_label, render_serialized_field, has_field_changed,
+    render_compact_section_header, render_info_text, render_inspector_checkbox, pretty_field_name,
+    format_display_name,
+    DRAG_SPEED_DEFAULT, MIN_LABEL_WIDTH,
+)
+from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
+
+if TYPE_CHECKING:
+    from InfEngine.renderstack.render_stack import RenderStack, PassEntry
+
+
+def _undo_manager():
+    from InfEngine.engine.undo import UndoManager
+    return UndoManager.instance()
+
+
+def _record_stack_field(stack: "RenderStack", target, field_name: str,
+                        old_value, new_value, description: str) -> None:
+    from InfEngine.engine.undo import RenderStackFieldCommand
+
+    mgr = _undo_manager()
+    if mgr and not mgr.is_executing and mgr.enabled:
+        mgr.record(RenderStackFieldCommand(stack, target, field_name, old_value, new_value, description))
+
+
+def _snapshot_injection_orders(stack: "RenderStack", injection_point: str) -> Dict[str, int]:
+    return {
+        entry.render_pass.name: entry.order
+        for entry in stack.get_passes_at(injection_point)
+    }
+
+
+def _compute_reordered_orders(stack: "RenderStack", dragged_name: str, target_name: str):
+    dragged_entry = None
+    target_entry = None
+    for entry in stack.pass_entries:
+        if entry.render_pass.name == dragged_name:
+            dragged_entry = entry
+        if entry.render_pass.name == target_name:
+            target_entry = entry
+    if dragged_entry is None or target_entry is None:
+        return None, None, None
+    if dragged_entry.render_pass.injection_point != target_entry.render_pass.injection_point:
+        return None, None, None
+
+    injection_point = dragged_entry.render_pass.injection_point
+    old_orders = _snapshot_injection_orders(stack, injection_point)
+    ordered_names = [
+        entry.render_pass.name
+        for entry in stack.get_passes_at(injection_point)
+        if entry.render_pass.name != dragged_name
+    ]
+    try:
+        index = ordered_names.index(target_name)
+    except ValueError:
+        return None, None, None
+    ordered_names.insert(index, dragged_name)
+    new_orders = {name: (idx + 1) * 10 for idx, name in enumerate(ordered_names)}
+    return injection_point, old_orders, new_orders
+
+
+def _compute_insert_after_orders(stack: "RenderStack", dragged_name: str,
+                                 after_name: str):
+    """Compute new orders with *dragged_name* placed immediately AFTER *after_name*.
+
+    Returns ``(injection_point, old_orders, new_orders)`` or ``(None, None, None)``.
+    """
+    dragged_entry = None
+    after_entry = None
+    for entry in stack.pass_entries:
+        if entry.render_pass.name == dragged_name:
+            dragged_entry = entry
+        if entry.render_pass.name == after_name:
+            after_entry = entry
+    if dragged_entry is None or after_entry is None:
+        return None, None, None
+    if dragged_entry.render_pass.injection_point != after_entry.render_pass.injection_point:
+        return None, None, None
+
+    injection_point = dragged_entry.render_pass.injection_point
+    old_orders = _snapshot_injection_orders(stack, injection_point)
+    ordered_names = [
+        entry.render_pass.name
+        for entry in stack.get_passes_at(injection_point)
+        if entry.render_pass.name != dragged_name
+    ]
+    try:
+        index = ordered_names.index(after_name)
+    except ValueError:
+        return None, None, None
+    ordered_names.insert(index + 1, dragged_name)
+    new_orders = {name: (idx + 1) * 10 for idx, name in enumerate(ordered_names)}
+    return injection_point, old_orders, new_orders
+
+def _get_pass_candidates(ip_name: str) -> Dict[str, type]:
+    """Return all RenderPass classes valid for this injection point."""
+    from InfEngine.renderstack.discovery import discover_passes
+
+    candidates: Dict[str, type] = {}
+    for name, cls in discover_passes().items():
+        if cls.injection_point != ip_name:
+            continue
+        candidates[name] = cls
+    return candidates
+
+
+def _get_addable_pass_candidates(stack: "RenderStack", ip_name: str) -> Dict[str, type]:
+    """Return candidates that are not already mounted on the stack."""
+    mounted_names = {e.render_pass.name for e in stack.pass_entries}
+    return {
+        name: cls
+        for name, cls in _get_pass_candidates(ip_name).items()
+        if name not in mounted_names
+    }
+
+
+def _render_pass_bar(ctx: InfGUIContext, label: str, uid: int) -> None:
+    """Render a standard pipeline pass as a flat read-only bar."""
+    display_label = format_display_name(label)
+    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_HEADER_PRIMARY_FRAME_PAD)
+    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_HEADER_ITEM_SPC)
+    ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE)
+    ctx.set_window_font_scale(Theme.INSPECTOR_HEADER_PRIMARY_FONT_SCALE)
+    ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+    ctx.push_style_color(ImGuiCol.Header, *Theme.INSPECTOR_HEADER_PRIMARY)
+    ctx.push_style_color(ImGuiCol.HeaderHovered, *Theme.INSPECTOR_HEADER_PRIMARY_HOVERED)
+    ctx.push_style_color(ImGuiCol.HeaderActive, *Theme.INSPECTOR_HEADER_PRIMARY_ACTIVE)
+    ctx.tree_node_ex(
+        f"{display_label}##pass_{uid}",
+        ImGuiTreeNodeFlags.NoTreePushOnOpen
+        | ImGuiTreeNodeFlags.Leaf
+        | ImGuiTreeNodeFlags.Bullet
+        | ImGuiTreeNodeFlags.SpanAvailWidth,
+    )
+    ctx.pop_style_color(4)
+    ctx.set_window_font_scale(1.0)
+    ctx.pop_style_var(3)
+
+
+def render_renderstack_inspector(ctx: InfGUIContext, stack: "RenderStack") -> None:
+    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
+    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+    _render_pipeline(ctx, stack)
+    _render_pipeline_params(ctx, stack)
+    ctx.separator()
+    _render_topology_with_effects(ctx, stack)
+    ctx.pop_style_var(2)
+
+
+# -- Pipeline selector ---------------------------------------------------
+
+def _render_pipeline(ctx: InfGUIContext, stack: "RenderStack") -> None:
+    lw = max_label_w(ctx, ["Pipeline"])
+    pipelines = stack.discover_pipelines()
+    names = ["Default Forward"] + sorted(
+        n for n in pipelines if n != "Default Forward"
+    )
+    cur = stack.pipeline_class_name or "Default Forward"
+    if cur not in names:
+        stack.set_pipeline("")
+        cur = "Default Forward"
+    idx = names.index(cur)
+    field_label(ctx, "Pipeline", lw)
+    new_idx = ctx.combo("##rs_pipeline", idx, names, -1)
+    if new_idx != idx:
+        sel = names[new_idx]
+        new_pipeline = "" if sel == "Default Forward" else sel
+        from InfEngine.engine.undo import RenderStackSetPipelineCommand
+        mgr = _undo_manager()
+        if mgr and not mgr.is_executing and mgr.enabled:
+            mgr.execute(RenderStackSetPipelineCommand(stack, stack.pipeline_class_name or "", new_pipeline))
+        else:
+            stack.set_pipeline(new_pipeline)
+
+
+# -- Pipeline parameters -------------------------------------------------
+
+def _render_pipeline_params(ctx: InfGUIContext, stack: "RenderStack") -> None:
+    """Render editable serialized fields exposed by the current pipeline."""
+    from InfEngine.components.serialized_field import get_serialized_fields
+
+    pipeline = stack.pipeline
+    fields = get_serialized_fields(pipeline.__class__)
+    if not fields:
+        return
+
+    ctx.separator()
+    ctx.label("Pipeline Settings")
+
+    display_names = [pretty_field_name(n) for n in fields.keys()]
+    lw = max_label_w(ctx, display_names) if fields else 0.0
+
+    _current_group: str = ""
+    _group_visible: bool = True
+
+    for field_name, metadata in fields.items():
+        # ── Collapsible group management ──
+        field_group = getattr(metadata, 'group', "") or ""
+        if field_group != _current_group:
+            _current_group = field_group
+            if field_group:
+                _group_visible = render_compact_section_header(ctx, field_group, level="secondary")
+            else:
+                _group_visible = True
+
+        if not _group_visible:
+            continue
+
+        if metadata.header:
+            ctx.separator()
+            ctx.label(metadata.header)
+        if metadata.space > 0:
+            ctx.dummy(0, metadata.space)
+
+        current_value = getattr(pipeline, field_name, metadata.default)
+        display_name = pretty_field_name(field_name)
+
+        # ── Unified field renderer ──
+        new_value = render_serialized_field(
+            ctx, f"##pp_{field_name}", display_name, metadata, current_value, lw,
+        )
+
+        if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
+            setattr(pipeline, field_name, new_value)
+            stack.invalidate_graph()
+            _record_stack_field(
+                stack,
+                pipeline,
+                field_name,
+                current_value,
+                new_value,
+                f"Set {display_name}",
+            )
+
+        if metadata.tooltip and ctx.is_item_hovered():
+            ctx.set_tooltip(metadata.tooltip)
+
+        info = getattr(metadata, 'info_text', "")
+        if info:
+            render_info_text(ctx, info)
+
+
+# =====================================================================
+# Topology + Effects (main section)
+# =====================================================================
+
+def _render_topology_with_effects(ctx: InfGUIContext, stack: "RenderStack") -> None:
+    """Render topology sequence as thin coloured bars.
+
+    Each injection point gets a [+] button that opens a popup for adding
+    effects.  Mounted effects appear as collapsible sections below the
+    injection point, with parameters and enable/disable toggle.
+    """
+    g = stack._build_full_topology_probe()
+    seq = g.topology_sequence
+
+    if not seq:
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label("  (empty topology)")
+        ctx.pop_style_color(1)
+        return
+
+    # Build mounted-effects lookup: injection_point → [PassEntry] sorted by order
+    entries = stack.pass_entries
+    ip_entries: Dict[str, List] = {}
+    for e in entries:
+        ip = e.render_pass.injection_point
+        ip_entries.setdefault(ip, []).append(e)
+    for ip in ip_entries:
+        ip_entries[ip].sort(key=lambda e: e.order)
+
+    # Map display labels back to injection point names
+    ip_list = g.injection_points
+    display_to_name = {}
+    for ip in ip_list:
+        display_to_name[ip.display_name] = ip.name
+
+    # Reduce vertical spacing between bars
+    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_SUBITEM_SPC)
+
+    # Running counter to guarantee unique IDs even when labels collide
+    _uid_counter = 0
+
+    for kind, label in seq:
+        _uid_counter += 1
+        if kind == "ip":
+            ip_name = display_to_name.get(label, label)
+            _render_injection_point_row(ctx, stack, ip_name, label, _uid_counter, ip_entries.get(ip_name, []))
+        else:
+            # Regular pipeline pass — thin bar
+            _render_pass_bar(ctx, label, _uid_counter)
+
+    ctx.pop_style_var(1)
+
+
+def _render_injection_point_row(
+    ctx: InfGUIContext,
+    stack: "RenderStack",
+    ip_name: str,
+    display_label: str,
+    uid: int,
+    mounted: List,
+) -> None:
+    """Render an injection point as a collapsible bar."""
+    popup_id = f"Popup_{uid}_{ip_name}"
+    has_addable_passes = bool(_get_addable_pass_candidates(stack, ip_name))
+    formatted_label = format_display_name(display_label)
+
+    header_open = render_compact_section_header(
+        ctx,
+        f"[{formatted_label}]##ip_hdr_{uid}_{ip_name}",
+        text_color=Theme.TEXT,
+        level="primary",
+    )
+
+    if header_open:
+        if mounted:
+            ctx.dummy(0, 2)
+            ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+
+            # Separator before first effect (drop here → insert before first)
+            first_name = mounted[0].render_pass.name
+            _render_effect_separator(ctx, stack,
+                                     f"##sep_top_{uid}_{ip_name}",
+                                     after_name=None, before_name=first_name)
+
+            for idx, entry in enumerate(mounted):
+                _render_mounted_effect(ctx, stack, entry, uid * 100 + idx)
+
+                # Separator after each effect
+                next_name = mounted[idx + 1].render_pass.name if idx + 1 < len(mounted) else None
+                _render_effect_separator(ctx, stack,
+                                         f"##sep_{uid}_{idx}_{entry.render_pass.name}",
+                                         after_name=entry.render_pass.name,
+                                         before_name=next_name)
+
+            ctx.pop_style_var(1)
+            ctx.dummy(0, 4)
+
+        # "Add Pass" button at the bottom of this injection point
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 0.0, 4.0)
+        _btn_x = ctx.get_cursor_pos_x()
+        ctx.set_cursor_pos_x(Theme.INSPECTOR_ACTION_ALIGN_X)
+        if not has_addable_passes:
+            ctx.begin_disabled(True)
+        ctx.button(
+            f"Add Pass...##add_{uid}_{ip_name}",
+            lambda: ctx.open_popup(popup_id),
+            -1,
+            0,
+        )
+        if not has_addable_passes:
+            ctx.end_disabled()
+        ctx.set_cursor_pos_x(_btn_x)
+        ctx.pop_style_var(1)
+
+        # Popup for adding passes
+        if ctx.begin_popup(popup_id):
+            _render_add_pass_popup(ctx, stack, ip_name, uid)
+            ctx.end_popup()
+
+
+def _render_add_pass_popup(
+    ctx: InfGUIContext,
+    stack: "RenderStack",
+    ip_name: str,
+    uid: int,
+) -> None:
+    """Render the categorised pass-selection popup.
+
+    Groups:
+      - Post-processing: FullScreenEffect subclasses (grouped by menu_path)
+      - Geometry: GeometryPass subclasses
+      - Other: remaining RenderPass subclasses
+    """
+    from InfEngine.renderstack.fullscreen_effect import FullScreenEffect
+    from InfEngine.renderstack.geometry_pass import GeometryPass
+
+    candidates = _get_pass_candidates(ip_name)
+
+    if not candidates:
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label("  No passes available")
+        ctx.pop_style_color(1)
+        return
+
+    mounted_names = {e.render_pass.name for e in stack.pass_entries}
+
+    # Classify into: effects (with menu_path subcategories), geometry, other
+    effect_categorized: Dict[str, List] = {}  # subcategory → [(leaf, full_name, cls)]
+    effect_uncategorized: List = []
+    geometry_passes: List = []
+    other_passes: List = []
+
+    for name, cls in sorted(candidates.items()):
+        if issubclass(cls, FullScreenEffect):
+            menu_path = getattr(cls, 'menu_path', '') or ''
+            if menu_path:
+                parts = menu_path.split('/')
+                category = parts[0]
+                leaf = parts[-1] if len(parts) > 1 else name
+                effect_categorized.setdefault(category, []).append((leaf, name, cls))
+            else:
+                effect_uncategorized.append((name, name, cls))
+        elif issubclass(cls, GeometryPass):
+            geometry_passes.append((name, name, cls))
+        else:
+            other_passes.append((name, name, cls))
+
+    def _render_items(items):
+        for leaf, full_name, cls in items:
+            already = full_name in mounted_names
+            if already:
+                ctx.begin_disabled(True)
+            if ctx.selectable(f"  {leaf}##add_{uid}_{full_name}"):
+                _add_pass(stack, cls)
+                ctx.close_current_popup()
+            if already:
+                ctx.end_disabled()
+
+    # Post-processing section
+    if effect_categorized or effect_uncategorized:
+        for cat in sorted(effect_categorized.keys()):
+            ctx.label(cat)
+            ctx.separator()
+            _render_items(effect_categorized[cat])
+        if effect_uncategorized:
+            if effect_categorized:
+                ctx.dummy(0, 4)
+            ctx.label("Post-processing")
+            ctx.separator()
+            _render_items(effect_uncategorized)
+
+    # Geometry section
+    if geometry_passes:
+        if effect_categorized or effect_uncategorized:
+            ctx.dummy(0, 4)
+        ctx.label("Geometry")
+        ctx.separator()
+        _render_items(geometry_passes)
+
+    # Other section
+    if other_passes:
+        if effect_categorized or effect_uncategorized or geometry_passes:
+            ctx.dummy(0, 4)
+        ctx.label("Other")
+        ctx.separator()
+        _render_items(other_passes)
+
+
+def _add_pass(stack: "RenderStack", cls: type) -> None:
+    """Instantiate and mount a pass onto the stack."""
+    from InfEngine.engine.undo import RenderStackAddPassCommand
+
+    mgr = _undo_manager()
+    if mgr and not mgr.is_executing and mgr.enabled:
+        mgr.execute(RenderStackAddPassCommand(stack, cls))
+        return
+
+    inst = cls()
+    success = stack.add_pass(inst)
+    if not success:
+        import sys
+        print(f"[RenderStack] add_pass failed for '{inst.name}' at injection point '{inst.injection_point}'", file=sys.stderr)
+
+
+# =====================================================================
+# Mounted effect rendering (collapsible section with parameters)
+# =====================================================================
+
+_DRAG_DROP_EFFECT_TYPE = "RENDERSTACK_EFFECT"
+
+
+def _render_effect_separator(
+    ctx: InfGUIContext,
+    stack: "RenderStack",
+    sep_id: str,
+    after_name: str | None,
+    before_name: str | None,
+) -> None:
+    """Render an invisible drop zone between / around effects.
+
+    Uses ``IGUI.reorder_separator`` for the white insertion line.
+    """
+    from .igui import IGUI
+
+    def _on_drop(payload):
+        dragged = str(payload)
+        anchor = after_name if after_name is not None else before_name
+        if anchor and dragged != anchor:
+            from InfEngine.engine.undo import RenderStackMovePassCommand
+
+            if after_name is not None:
+                _ip, old_orders, new_orders = _compute_insert_after_orders(stack, dragged, after_name)
+            else:
+                _ip, old_orders, new_orders = _compute_reordered_orders(stack, dragged, before_name)
+            if old_orders and new_orders and old_orders != new_orders:
+                mgr = _undo_manager()
+                if mgr and not mgr.is_executing and mgr.enabled:
+                    mgr.execute(RenderStackMovePassCommand(stack, old_orders, new_orders))
+                else:
+                    for name, order in new_orders.items():
+                        stack.reorder_pass(name, order)
+
+    IGUI.reorder_separator(ctx, sep_id, _DRAG_DROP_EFFECT_TYPE, _on_drop)
+
+
+def _render_mounted_effect(
+    ctx: InfGUIContext,
+    stack: "RenderStack",
+    entry,
+    uid: int = 0,
+) -> None:
+    """Render a single mounted effect as a standard InfComponent-like section.
+
+    Supports drag-and-drop reordering within the same injection point.
+    """
+    from InfEngine.renderstack.fullscreen_effect import FullScreenEffect
+
+    rp = entry.render_pass
+    effect_name = rp.name
+    is_effect = isinstance(rp, FullScreenEffect)
+
+    ctx.push_id_str(f"fx_{uid}_{effect_name}")
+
+    new_enabled = render_inspector_checkbox(ctx, f"##en_{uid}_{effect_name}", entry.enabled)
+    if new_enabled != entry.enabled:
+        from InfEngine.engine.undo import RenderStackTogglePassCommand
+
+        mgr = _undo_manager()
+        if mgr and not mgr.is_executing and mgr.enabled:
+            mgr.execute(RenderStackTogglePassCommand(stack, effect_name, entry.enabled, new_enabled))
+        else:
+            stack.set_pass_enabled(effect_name, new_enabled)
+
+    ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
+    text_color = Theme.TEXT if entry.enabled else Theme.META_TEXT
+    display_name = format_display_name(effect_name)
+    header_open = render_compact_section_header(
+        ctx,
+        f"{display_name}##hdr_{uid}",
+        text_color=text_color,
+        level="secondary",
+    )
+
+    # Drag source — start dragging this effect
+    if ctx.begin_drag_drop_source(0):
+        ctx.set_drag_drop_payload_str(_DRAG_DROP_EFFECT_TYPE, effect_name)
+        ctx.label(display_name)
+        ctx.end_drag_drop_source()
+
+    # Right-click context menu for removal
+    if ctx.begin_popup_context_item(f"ctx_{uid}_{effect_name}"):
+        if ctx.selectable(f"Remove##{uid}"):
+            from InfEngine.engine.undo import RenderStackRemovePassCommand
+
+            mgr = _undo_manager()
+            if mgr and not mgr.is_executing and mgr.enabled:
+                mgr.execute(RenderStackRemovePassCommand(stack, effect_name))
+            else:
+                stack.remove_pass(effect_name)
+            ctx.close_current_popup()
+        ctx.end_popup()
+
+    if header_open:
+        if not entry.enabled:
+            ctx.begin_disabled(True)
+
+        if is_effect:
+            _render_effect_params(ctx, stack, rp, uid)
+        else:
+            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+            ctx.label(f"  injection: {rp.injection_point}")
+            ctx.label(f"  order: {entry.order}")
+            ctx.pop_style_color(1)
+
+        if not entry.enabled:
+            ctx.end_disabled()
+
+    ctx.pop_id()
+
+
+# =====================================================================
+# Effect parameter rendering
+# =====================================================================
+
+def _render_effect_params(
+    ctx: InfGUIContext,
+    stack: "RenderStack",
+    effect,
+    uid: int = 0,
+) -> None:
+    """Render editable serialized fields for a FullScreenEffect instance."""
+    fields = dict(getattr(effect.__class__, '_serialized_fields_', {}))
+    if not fields:
+        return
+
+    labels = [pretty_field_name(name) for name in fields.keys()]
+    lw = max(Theme.INSPECTOR_MIN_LABEL_WIDTH, max_label_w(ctx, labels)) if fields else Theme.INSPECTOR_MIN_LABEL_WIDTH
+
+    for field_name, metadata in fields.items():
+        wid = f"##ef_{uid}_{field_name}"
+        display_name = pretty_field_name(field_name)
+
+        if metadata.header:
+            ctx.separator()
+            ctx.label(metadata.header)
+        if getattr(metadata, 'space', 0) > 0:
+            ctx.dummy(0, metadata.space)
+
+        current_value = getattr(effect, field_name, metadata.default)
+
+        # ── Unified field renderer ──
+        new_value = render_serialized_field(
+            ctx, wid, display_name, metadata, current_value, lw,
+        )
+
+        if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
+            setattr(effect, field_name, new_value)
+            stack.invalidate_graph()
+            _record_stack_field(
+                stack,
+                effect,
+                field_name,
+                current_value,
+                new_value,
+                f"Set {display_name}",
+            )
+
+        if metadata.tooltip and ctx.is_item_hovered():
+            ctx.set_tooltip(metadata.tooltip)

@@ -1,0 +1,59 @@
+# Auto-generated script to copy DLL dependencies
+set(TARGET_DIR "@PYTHON_TARGET_DIR@")
+set(BUILD_DIR "@CMAKE_BINARY_DIR@")
+set(SOURCE_DIR "@CMAKE_SOURCE_DIR@")
+
+# Function to copy file if it exists
+function(copy_if_exists src dest)
+    if(EXISTS "${src}")
+        message(STATUS "Copying ${src} to ${dest}")
+        file(COPY "${src}" DESTINATION "${dest}")
+    else()
+        message(STATUS "File not found: ${src}")
+    endif()
+endfunction()
+
+# Use the build configuration passed from CMake (Release / RelWithDebInfo / etc.)
+# Falls back to Release if not provided.
+if(NOT INFENGINE_BUILD_CFG)
+    set(_CFG "Release")
+else()
+    set(_CFG "${INFENGINE_BUILD_CFG}")
+endif()
+
+# List of known DLL directories to search
+set(DLL_SEARCH_DIRS
+    "${BUILD_DIR}/external/${_CFG}"
+    "${BUILD_DIR}/external/assimp/bin/${_CFG}"
+    "${BUILD_DIR}/external/glslang/glslang/${_CFG}"
+    "${BUILD_DIR}/external/glslang/SPIRV/${_CFG}"
+    "${BUILD_DIR}/external/SDL/${_CFG}"
+    "${BUILD_DIR}/external/JoltPhysics/${_CFG}"
+    "${BUILD_DIR}/${_CFG}"
+)
+
+# Search for all DLL files in the build directories
+foreach(search_dir ${DLL_SEARCH_DIRS})
+    if(EXISTS "${search_dir}")
+        file(GLOB dll_files "${search_dir}/*.dll")
+        foreach(dll_file ${dll_files})
+            get_filename_component(dll_name ${dll_file} NAME)
+            copy_if_exists("${dll_file}" "${TARGET_DIR}")
+        endforeach()
+    endif()
+endforeach()
+
+# Also search for any other DLL files that might be in subdirectories
+file(GLOB_RECURSE all_dlls "${BUILD_DIR}/*.dll")
+foreach(dll_file ${all_dlls})
+    # Skip if it's already in the target directory
+    get_filename_component(dll_dir ${dll_file} DIRECTORY)
+    get_filename_component(dll_name ${dll_file} NAME)
+    
+    # Only copy DLLs from the detected configuration directory
+    if(dll_dir MATCHES ".*/${_CFG}$" OR dll_dir MATCHES ".*/${_CFG}/.*")
+        copy_if_exists("${dll_file}" "${TARGET_DIR}")
+    endif()
+endforeach()
+
+message(STATUS "Finished copying DLL dependencies to ${TARGET_DIR}")

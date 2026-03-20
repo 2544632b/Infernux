@@ -1,0 +1,105 @@
+"""Type stubs for InfEngine.components package."""
+
+from __future__ import annotations
+
+from .component import InfComponent as InfComponent
+from .builtin_component import BuiltinComponent as BuiltinComponent, CppProperty as CppProperty
+from .builtin import Light as Light, MeshRenderer as MeshRenderer, Camera as Camera
+from .builtin import AudioSource as AudioSource, AudioListener as AudioListener
+from .serializable_object import SerializableObject as SerializableObject
+from .serialized_field import (
+    serialized_field as serialized_field,
+    int_field as int_field,
+    list_field as list_field,
+    component_field as component_field,
+    component_list_field as component_list_field,
+    hide_field as hide_field,
+    FieldType as FieldType,
+    get_serialized_fields as get_serialized_fields,
+    get_field_value as get_field_value,
+    set_field_value as set_field_value,
+)
+from .ref_wrappers import (
+    GameObjectRef as GameObjectRef,
+    MaterialRef as MaterialRef,
+    ComponentRef as ComponentRef,
+)
+from .inspector import (
+    ComponentInspector as ComponentInspector,
+    InspectorData as InspectorData,
+)
+from .script_loader import (
+    load_component_from_file as load_component_from_file,
+    load_all_components_from_file as load_all_components_from_file,
+    create_component_instance as create_component_instance,
+    load_and_create_component as load_and_create_component,
+    get_component_info as get_component_info,
+    ScriptLoadError as ScriptLoadError,
+)
+from .registry import (
+    get_type as get_type,
+    get_all_types as get_all_types,
+    T as T,
+)
+from .decorators import (
+    require_component as require_component,
+    disallow_multiple as disallow_multiple,
+    execute_in_edit_mode as execute_in_edit_mode,
+    add_component_menu as add_component_menu,
+    icon as icon,
+    help_url as help_url,
+    RequireComponent as RequireComponent,
+    DisallowMultipleComponent as DisallowMultipleComponent,
+    ExecuteInEditMode as ExecuteInEditMode,
+    AddComponentMenu as AddComponentMenu,
+    HelpURL as HelpURL,
+    Icon as Icon,
+)
+
+__all__ = [
+    "InfComponent",
+    "BuiltinComponent",
+    "CppProperty",
+    "Light",
+    "MeshRenderer",
+    "Camera",
+    "AudioSource",
+    "AudioListener",
+    "serialized_field",
+    "int_field",
+    "hide_field",
+    "FieldType",
+    "GameObjectRef",
+    "MaterialRef",
+    "ComponentRef",
+    "SerializableObject",
+    "list_field",
+    "component_field",
+    "component_list_field",
+    "get_serialized_fields",
+    "get_field_value",
+    "set_field_value",
+    "ComponentInspector",
+    "InspectorData",
+    "load_component_from_file",
+    "load_all_components_from_file",
+    "create_component_instance",
+    "load_and_create_component",
+    "get_component_info",
+    "ScriptLoadError",
+    "get_type",
+    "get_all_types",
+    "T",
+    "require_component",
+    "disallow_multiple",
+    "execute_in_edit_mode",
+    "add_component_menu",
+    "icon",
+    "help_url",
+    "RequireComponent",
+    "DisallowMultipleComponent",
+    "ExecuteInEditMode",
+    "AddComponentMenu",
+    "HelpURL",
+    "Icon",
+]

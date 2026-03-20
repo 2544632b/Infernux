@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="redGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#c94444"/>
+      <stop offset="100%" style="stop-color:#eb5757"/>
+    </linearGradient>
+  </defs>
+  <circle cx="50" cy="50" r="45" fill="#191919" stroke="url(#redGrad)" stroke-width="2"/>
+  <text x="50" y="62" font-size="40" text-anchor="middle" fill="url(#redGrad)">🔥</text>
+</svg>

@@ -1,0 +1,66 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20
+  },
+
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release Preset",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build",
+
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug Preset (RelWithDebInfo + Profiling)",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "format",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "targets": [
+        "clang_format"
+      ]
+    },
+    {
+      "name": "wiki",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "targets": [
+        "build_wiki_html"
+      ]
+    },
+    {
+      "name": "packaging",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "targets": [
+        "infengine_hub"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GameObject - InfEngine Scripting API</title>
+    <link rel="icon" type="image/svg+xml" href="/InfEngine/assets/favicon.svg">
+    <link rel="stylesheet" href="/InfEngine/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* ======================================================
+           InfEngine API Reference — Unity-Inspired Dark Theme
+           ====================================================== */
+
+        /* Layout */
+        .api-layout {
+            display: flex;
+            min-height: calc(100vh - var(--nav-height));
+            padding-top: var(--nav-height);
+        }
+
+        /* ---- Sidebar ---- */
+        .api-sidebar {
+            width: 280px;
+            background: #0b0b12;
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: var(--nav-height);
+            height: calc(100vh - var(--nav-height));
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .api-sidebar::-webkit-scrollbar { width: 5px; }
+        .api-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .api-sidebar::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+        .sidebar-hdr {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .sidebar-hdr h3 {
+            margin: 0;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+        }
+
+        /* Language toggle */
+        .lang-sw {
+            display: flex;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .lang-sw a {
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-elevated);
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .lang-sw a.on {
+            background: var(--primary);
+            color: #fff;
+        }
+        .lang-sw a:hover:not(.on) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* Namespace tree */
+        .ns-tree { padding: 6px 0 20px; }
+
+        .ns-group { margin-bottom: 1px; }
+
+        .ns-hd {
+            display: flex;
+            align-items: center;
+            padding: 7px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .ns-hd:hover { background: rgba(255,255,255,0.025); }
+
+        .ns-arr {
+            width: 14px;
+            font-size: 0.5rem;
+            color: #555;
+            transition: transform 0.15s;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .ns-hd.open .ns-arr { transform: rotate(90deg); }
+
+        .ns-nm {
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .ns-hd.hi .ns-nm { color: var(--primary); }
+
+        .ns-ch {
+            display: none;
+            padding: 2px 0 4px;
+        }
+        .ns-hd.open + .ns-ch { display: block; }
+
+        .ns-ch a {
+            display: block;
+            padding: 3px 16px 3px 38px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.1s, background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .ns-ch a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+        .ns-ch a.cur {
+            color: var(--text-primary);
+            background: rgba(255,107,53,0.07);
+            border-left-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ---- Content ---- */
+        .api-main {
+            flex: 1;
+            padding: 36px 56px 80px;
+            max-width: 880px;
+            min-width: 0;
+        }
+
+        /* H1 — class name */
+        .api-main h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin: 0 0 4px;
+            padding: 0;
+            border: none;
+            color: var(--text-primary);
+        }
+
+        /* "class in Package" subtitle */
+        .api-main .class-info {
+            font-size: 0.88rem;
+            color: var(--text-muted);
+            margin-bottom: 22px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .api-main .class-info b { color: var(--text-secondary); }
+        .api-main .class-info a { color: var(--primary); }
+
+        /* H2 — section headers */
+        .api-main h2 {
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin: 30px 0 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .api-main h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin: 18px 0 6px;
+        }
+
+        /* Paragraphs */
+        .api-main p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.75;
+            margin-bottom: 12px;
+        }
+
+        .api-main blockquote {
+            margin: 12px 0;
+            padding: 10px 16px;
+            background: rgba(255,107,53,0.04);
+            border-left: 3px solid var(--primary);
+            border-radius: 0 4px 4px 0;
+        }
+        .api-main blockquote p { margin: 0; font-size: 0.85rem; }
+
+        /* Tables — Unity style: hidden header, 2-col */
+        .api-main table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 4px 0 18px;
+        }
+        .api-main thead { display: none; }
+
+        .api-main tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .api-main tbody tr:last-child { border-bottom: none; }
+
+        .api-main td {
+            padding: 7px 0;
+            font-size: 0.86rem;
+            vertical-align: top;
+        }
+        .api-main td:first-child {
+            width: 200px;
+            padding-right: 20px;
+            color: var(--primary);
+            font-size: 0.86rem;
+            font-weight: 500;
+        }
+        .api-main td:last-child { color: var(--text-secondary); }
+        .api-main td a { color: var(--primary); }
+        .api-main tbody tr:hover { background: rgba(255,255,255,0.012); }
+
+        /* Inline code — normal font, subtle highlight */
+        .api-main code {
+            font-family: inherit;
+            font-size: inherit;
+            background: rgba(255,255,255,0.06);
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: var(--primary-light);
+        }
+
+        /* Code blocks */
+        .api-main pre {
+            background: #0d0d15;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 10px 0 18px;
+        }
+        .api-main pre code {
+            font-family: var(--font-mono);
+            background: none;
+            padding: 0;
+            font-size: 0.83rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+        }
+
+        /* Lists */
+        .api-main ul, .api-main ol { padding-left: 18px; margin-bottom: 12px; }
+        .api-main li {
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .api-main hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 26px 0;
+        }
+
+        /* ---- Footer ---- */
+        .api-ft { margin-left: 280px; }
+        .api-ft .footer-bottom p { font-size: 0.8rem; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1024px) {
+            .api-sidebar { width: 240px; }
+            .api-main { padding: 28px 32px 60px; }
+            .api-ft { margin-left: 240px; }
+        }
+        @media (max-width: 768px) {
+            .api-layout { flex-direction: column; }
+            .api-sidebar {
+                width: 100%; position: relative; top: 0;
+                height: auto; max-height: 50vh;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .api-main { padding: 20px; max-width: 100%; }
+            .api-ft { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/InfEngine/" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="/InfEngine/">Home</a>
+                <a href="/InfEngine/#features">Features</a>
+                <a href="/InfEngine/roadmap.html">Roadmap</a>
+                <a href="/InfEngine/wiki/site/en/api/index.html" class="active">API Reference</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- API Reference Layout -->
+    <div class="api-layout">
+        <!-- Sidebar — namespace / package tree -->
+        <aside class="api-sidebar">
+            <div class="sidebar-hdr">
+                <h3>脚本 API</h3>
+                <div class="lang-sw">
+                    <a href="/InfEngine/wiki/site/en/api/index.html"
+                       class="">EN</a>
+                    <a href="/InfEngine/wiki/site/zh/api/index.html"
+                       class="on">中文</a>
+                </div>
+            </div>
+
+            <div class="ns-tree"><div class="ns-group">
+                        <div class="ns-hd open hi">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/zh/api/Component.html" class="">Component</a><a href="/InfEngine/wiki/site/zh/api/GameObject.html" class="cur">GameObject</a><a href="/InfEngine/wiki/site/zh/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/zh/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/zh/api/Scene.html" class="">Scene</a><a href="/InfEngine/wiki/site/zh/api/SceneManager.html" class="">SceneManager</a><a href="/InfEngine/wiki/site/zh/api/Transform.html" class="">Transform</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/InfComponent.html" class="">InfComponent</a><a href="/InfEngine/wiki/site/zh/api/add_component_menu.html" class="">add_component_menu</a><a href="/InfEngine/wiki/site/zh/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/InfEngine/wiki/site/zh/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/InfEngine/wiki/site/zh/api/require_component.html" class="">require_component</a><a href="/InfEngine/wiki/site/zh/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components.builtin</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/zh/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/zh/api/MeshRenderer.html" class="">MeshRenderer</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.core</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Material.html" class="">Material</a><a href="/InfEngine/wiki/site/zh/api/MeshData.html" class="">MeshData</a><a href="/InfEngine/wiki/site/zh/api/Shader.html" class="">Shader</a><a href="/InfEngine/wiki/site/zh/api/Texture.html" class="">Texture</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.debug</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Debug.html" class="">Debug</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.gizmos</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Gizmos.html" class="">Gizmos</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.input</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Input.html" class="">Input</a><a href="/InfEngine/wiki/site/zh/api/KeyCode.html" class="">KeyCode</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.math</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/vector2.html" class="">vector2</a><a href="/InfEngine/wiki/site/zh/api/vector3.html" class="">vector3</a><a href="/InfEngine/wiki/site/zh/api/vector4.html" class="">vector4</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.scene</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/SceneManager.html" class="">SceneManager</a></div>
+                    </div></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="api-main">
+            <h1 id="gameobject">GameObject<a class="headerlink" href="#gameobject" title="Permanent link">&para;</a></h1>
+<div class="class-info">
+类位于 <b>InfEngine</b>
+</div>
+
+<h2 id="_1">描述<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>场景层级中具有组件的游戏对象。</p>
+<!-- USER CONTENT START -->
+<p>description</p>
+<p>GameObject 是 InfEngine 场景的基础构建单元。游戏中的每一个实体——角色、灯光、摄像机、道具——都是一个 GameObject。单独的 GameObject 只是一个有名称的容器，它完全通过挂载的<a href="Component.html">组件</a>来获得具体功能。</p>
+<p>每个 GameObject 自动包含一个 <a href="Transform.html">Transform</a> 组件，用于定义它在场景层级中的位置、旋转和缩放。通过 <code>add_component()</code> 添加更多组件来赋予对象视觉表现、物理特性、音频或自定义游戏逻辑。运行时使用 <code>get_component()</code> 和 <code>get_py_component()</code> 获取已挂载的组件。</p>
+<p>GameObject 形成父子层级结构。通过 <code>set_parent()</code> 设置父对象后，子对象的 <a href="Transform.html">Transform</a> 将相对于父对象进行计算，因此移动父对象会带动所有子对象一起移动。使用 <code>find_child()</code> 和 <code>find_descendant()</code> 根据名称查找对象，使用 <code>compare_tag()</code> 通过标签识别对象，实现碰撞过滤、目标选择等游戏逻辑。</p>
+<!-- USER CONTENT END -->
+
+<h2 id="_2">属性<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>名称</th>
+<th>类型</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>name</td>
+<td><code>str</code></td>
+<td>此 GameObject 的名称。</td>
+</tr>
+<tr>
+<td>active</td>
+<td><code>bool</code></td>
+<td>此 GameObject 是否处于活动状态。</td>
+</tr>
+<tr>
+<td>id</td>
+<td><code>int</code></td>
+<td>唯一对象标识符。 <em>(只读)</em></td>
+</tr>
+<tr>
+<td>transform</td>
+<td><code>Transform</code></td>
+<td>获取 Transform 组件。 <em>(只读)</em></td>
+</tr>
+<tr>
+<td>active_self</td>
+<td><code>bool</code></td>
+<td>此对象自身是否处于活动状态。active 的别名。 <em>(只读)</em></td>
+</tr>
+<tr>
+<td>active_in_hierarchy</td>
+<td><code>bool</code></td>
+<td>此对象在层级中是否处于活动状态。 <em>(只读)</em></td>
+</tr>
+<tr>
+<td>is_static</td>
+<td><code>bool</code></td>
+<td>静态标志。</td>
+</tr>
+<tr>
+<td>scene</td>
+<td><code>Optional[Scene]</code></td>
+<td>此 GameObject 所属的场景。 <em>(只读)</em></td>
+</tr>
+<tr>
+<td>tag</td>
+<td><code>str</code></td>
+<td>此 GameObject 的标签字符串。</td>
+</tr>
+<tr>
+<td>layer</td>
+<td><code>int</code></td>
+<td>此 GameObject 的层级索引 (0-31)。</td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>properties</p>
+<!-- USER CONTENT END -->
+
+<h2 id="_3">公共方法<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_transform() → Transform</code></td>
+<td>获取 Transform 组件。</td>
+</tr>
+<tr>
+<td><code>add_component(component_type: Union[str, type]) → Optional[Component]</code></td>
+<td>通过类型或类型名称添加 C++ 组件。</td>
+</tr>
+<tr>
+<td><code>remove_component(component: Component) → bool</code></td>
+<td>移除一个组件实例（无法移除 Transform）。</td>
+</tr>
+<tr>
+<td><code>get_components() → List[Component]</code></td>
+<td>获取所有组件（包括 Transform）。</td>
+</tr>
+<tr>
+<td><code>get_cpp_component(type_name: str) → Optional[Component]</code></td>
+<td>根据类型名称获取 C++ 组件。</td>
+</tr>
+<tr>
+<td><code>get_cpp_components(type_name: str) → List[Component]</code></td>
+<td>获取指定类型名称的所有 C++ 组件。</td>
+</tr>
+<tr>
+<td><code>add_py_component(component_instance: Any) → Optional[Any]</code></td>
+<td>向此 GameObject 添加 Python InfComponent 实例。</td>
+</tr>
+<tr>
+<td><code>get_py_component(component_type: type) → Optional[Any]</code></td>
+<td>获取指定类型的 Python 组件。</td>
+</tr>
+<tr>
+<td><code>get_py_components() → List[Any]</code></td>
+<td>获取附加到此 GameObject 的所有 Python 组件。</td>
+</tr>
+<tr>
+<td><code>remove_py_component(component: Any) → bool</code></td>
+<td>移除一个 Python 组件实例。</td>
+</tr>
+<tr>
+<td><code>get_parent() → Optional[GameObject]</code></td>
+<td>获取父级 GameObject。</td>
+</tr>
+<tr>
+<td><code>set_parent(parent: Optional[GameObject], world_position_stays: bool = True) → None</code></td>
+<td>设置父级 GameObject（None 表示根级）。</td>
+</tr>
+<tr>
+<td><code>get_children() → List[GameObject]</code></td>
+<td>获取子 GameObject 列表。</td>
+</tr>
+<tr>
+<td><code>get_child_count() → int</code></td>
+<td>获取子对象数量。</td>
+</tr>
+<tr>
+<td><code>is_active_in_hierarchy() → bool</code></td>
+<td>检查此对象及所有父对象是否处于活动状态。</td>
+</tr>
+<tr>
+<td><code>get_child(index: int) → Optional[GameObject]</code></td>
+<td>根据索引获取子对象。</td>
+</tr>
+<tr>
+<td><code>find_child(name: str) → Optional[GameObject]</code></td>
+<td>根据名称查找直接子对象（非递归）。</td>
+</tr>
+<tr>
+<td><code>find_descendant(name: str) → Optional[GameObject]</code></td>
+<td>根据名称查找后代对象（递归深度优先搜索）。</td>
+</tr>
+<tr>
+<td><code>compare_tag(tag: str) → bool</code></td>
+<td>此 GameObject 的标签是否与给定标签匹配。</td>
+</tr>
+<tr>
+<td><code>serialize() → str</code></td>
+<td>将 GameObject 序列化为 JSON 字符串。</td>
+</tr>
+<tr>
+<td><code>deserialize(json_str: str) → None</code></td>
+<td>从 JSON 字符串反序列化 GameObject。</td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>public_methods</p>
+<!-- USER CONTENT END -->
+
+<h2 id="_4">示例<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<!-- USER CONTENT START -->
+<p>example</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine</span><span class="w"> </span><span class="kn">import</span> <span class="n">InfComponent</span><span class="p">,</span> <span class="n">serialized_field</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.math</span><span class="w"> </span><span class="kn">import</span> <span class="n">vector3</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">PlayerSetup</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">speed</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="c1"># 重命名游戏对象</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;Player&quot;</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">tag</span> <span class="o">=</span> <span class="s2">&quot;Player&quot;</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="c1"># 添加网格渲染器以显示外观</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="n">renderer</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">add_component</span><span class="p">(</span><span class="s2">&quot;MeshRenderer&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="c1"># 创建子对象作为武器</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        <span class="n">scene</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">scene</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="n">weapon</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create_game_object</span><span class="p">(</span><span class="s2">&quot;Sword&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        <span class="n">weapon</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        <span class="n">weapon</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">vector3</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        <span class="c1"># 每帧向前移动</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        <span class="n">direction</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">forward</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">translate</span><span class="p">(</span><span class="n">direction</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">delta_time</span><span class="p">)</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        <span class="c1"># 遍历所有子对象</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        <span class="k">for</span> <span class="n">child</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_children</span><span class="p">():</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>            <span class="k">pass</span>  <span class="c1"># 处理每个子对象</span>
+</code></pre></div>
+<!-- USER CONTENT END -->
+
+<h2 id="_5">另请参阅<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<!-- USER CONTENT START -->
+<p>see_also</p>
+<ul>
+<li><a href="Transform.html">Transform</a></li>
+<li><a href="Component.html">Component 组件</a></li>
+<li><a href="InfComponent.html">InfComponent 脚本组件</a></li>
+<li><a href="Scene.html">Scene 场景</a></li>
+<li><a href="SceneManager.html">SceneManager 场景管理器</a></li>
+</ul>
+<!-- USER CONTENT END -->
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer api-ft">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="/InfEngine/js/main.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.ns-hd').forEach(function(h) {
+            h.addEventListener('click', function() { this.classList.toggle('open'); });
+        });
+    });
+    </script>
+</body>
+</html>

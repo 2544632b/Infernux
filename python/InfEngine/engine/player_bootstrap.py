@@ -1,0 +1,241 @@
+"""
+PlayerBootstrap — minimal startup sequence for standalone game playback.
+
+Replaces :class:`EditorBootstrap` with a stripped-down path that:
+  1. Creates the Engine (no editor panels)
+  2. Loads tag/layer settings
+  3. Sets up SceneFileManager + PlayModeManager (scene loading needs them)
+  4. Enables the game camera
+  5. Registers the fullscreen PlayerGUI (with optional splash sequence)
+  6. Loads the first scene from BuildSettings.json
+  7. Enters play mode
+  8. Runs the main loop
+
+No undo, no selection, no hierarchy, no inspector, no docking layout.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Dict, List, Optional
+
+from InfEngine.lib import TagLayerManager
+from InfEngine.resources import engine_font_path
+from InfEngine.engine.engine import Engine, LogLevel
+from InfEngine.engine.scene_manager import SceneFileManager
+from InfEngine.engine.play_mode import PlayModeManager
+from InfEngine.engine.player_gui import PlayerGUI
+from InfEngine.engine.path_utils import safe_path as _safe_path
+from InfEngine.debug import Debug
+
+_log = logging.getLogger("InfEngine.player")
+
+
+def _plog(msg):
+    """Write to player.log (only available in packaged builds)."""
+    path = os.environ.get("_INFENGINE_PLAYER_LOG")
+    if not path:
+        # Fallback: write next to the executable
+        import sys as _sys
+        _exe = getattr(_sys, 'executable', '') or ''
+        _d = os.path.dirname(os.path.abspath(_exe))
+        path = os.path.join(_d, "player.log")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(str(msg) + "\n")
+    except OSError:
+        pass
+
+
+class PlayerBootstrap:
+    """Orchestrates the standalone player startup sequence."""
+
+    def __init__(
+        self,
+        project_path: str,
+        engine_log_level=LogLevel.Info,
+        *,
+        display_mode: str = "fullscreen_borderless",
+        window_width: int = 1920,
+        window_height: int = 1080,
+        splash_items: Optional[List[Dict]] = None,
+    ):
+        self.project_path = project_path
+        self.engine_log_level = engine_log_level
+        self.display_mode = display_mode
+        self.window_width = window_width
+        self.window_height = window_height
+        self.splash_items = splash_items or []
+        self.engine: Optional[Engine] = None
+        self.scene_file_manager: Optional[SceneFileManager] = None
+        self._player_gui: Optional[PlayerGUI] = None
+
+    # ── Public entry point ─────────────────────────────────────────────
+
+    def run(self):
+        """Execute all bootstrap phases and start the main loop."""
+        self._precompile_jit()
+        self._init_engine()
+        self._load_tag_layer_settings()
+        self._create_managers()
+        self._setup_game_camera()
+        self._register_player_gui()
+        self._load_initial_scene()
+        self._enter_play_mode()
+
+    # ── Phase 1: JIT pre-compilation ───────────────────────────────────
+
+    @staticmethod
+    def _precompile_jit():
+        try:
+            from InfEngine._jit_kernels import precompile as _jit_precompile
+            _jit_precompile()
+        except ImportError:
+            pass
+
+    # ── Phase 2: Engine initialization ─────────────────────────────────
+
+    def _init_engine(self):
+        self.engine = Engine(self.engine_log_level)
+
+        # For windowed mode, use the requested size;
+        # for fullscreen borderless, start at a default size — the
+        # caller will switch to fullscreen after bootstrap.
+        if self.display_mode == "windowed":
+            w, h = self.window_width, self.window_height
+        else:
+            w, h = 1920, 1080
+
+        self.engine.init_renderer(
+            width=w, height=h, project_path=self.project_path
+        )
+        self.engine.set_gui_font(engine_font_path, 15)
+
+    # ── Phase 3: Tag/layer settings ────────────────────────────────────
+
+    def _load_tag_layer_settings(self):
+        path = os.path.join(self.project_path, "ProjectSettings", "TagLayerSettings.json")
+        if os.path.isfile(path):
+            TagLayerManager.instance().load_from_file(_safe_path(path))
+
+    # ── Phase 4: Create managers ───────────────────────────────────────
+
+    def _create_managers(self):
+        self.scene_file_manager = SceneFileManager()
+        self.scene_file_manager.set_asset_database(self.engine.get_asset_database())
+        self.scene_file_manager.set_engine(self.engine.get_native_engine())
+
+        # PlayModeManager is already created inside Engine.init_renderer()
+        pm = self.engine.get_play_mode_manager()
+        if pm:
+            pm.set_asset_database(self.engine.get_asset_database())
+
+    # ── Phase 5: Enable game camera ────────────────────────────────────
+
+    def _setup_game_camera(self):
+        self.engine.set_game_camera_enabled(True)
+
+    # ── Phase 6: Register player GUI ───────────────────────────────────
+
+    def _register_player_gui(self):
+        self._player_gui = PlayerGUI(
+            self.engine,
+            splash_items=self.splash_items,
+            data_root=self.project_path,
+        )
+        self.engine.register_gui("player_gui", self._player_gui)
+
+    # ── Phase 7: Load initial scene ────────────────────────────────────
+
+    def _load_initial_scene(self):
+        import json as _json
+        bs_path = os.path.join(
+            self.project_path, "ProjectSettings", "BuildSettings.json"
+        )
+        data = {}
+        if os.path.isfile(bs_path):
+            try:
+                with open(bs_path, "r", encoding="utf-8", errors="replace") as _f:
+                    data = _json.load(_f)
+            except Exception:
+                pass
+        scenes = data.get("scenes", [])
+        if not scenes:
+            Debug.log_warning("No scenes in BuildSettings.json — starting with empty scene")
+            return
+
+        first_scene = scenes[0]
+        # Resolve relative paths against project root (packaged builds
+        # store scene paths relative to the game folder)
+        if not os.path.isabs(first_scene):
+            first_scene = os.path.join(self.project_path, first_scene)
+
+        if not os.path.isfile(first_scene):
+            Debug.log_warning(f"First scene file not found: {first_scene}")
+            return
+
+        if self.scene_file_manager:
+            self.scene_file_manager._do_open_scene(first_scene)
+            Debug.log_internal(f"Loaded initial scene: {os.path.basename(first_scene)}")
+
+    # ── Phase 8: Enter play mode ───────────────────────────────────────
+
+    def _enter_play_mode(self):
+        """Enter play mode immediately (no deferred task, no save guard)."""
+        from InfEngine.lib import SceneManager as _NativeSM
+        from InfEngine.components.component import InfComponent
+        from InfEngine.components.builtin_component import BuiltinComponent
+        from InfEngine.renderstack.render_stack import RenderStack
+        from InfEngine.timing import Time
+        from InfEngine.engine.play_mode import PlayModeState
+
+        pm = self.engine.get_play_mode_manager()
+        if not pm:
+            Debug.log_error("No PlayModeManager available")
+            return
+
+        sm = _NativeSM.instance()
+        scene = sm.get_active_scene()
+        if not scene:
+            Debug.log_warning("No active scene — play mode skipped")
+            return
+
+        # Serialize current state as "backup" (player never restores, but PM needs it)
+        snapshot = scene.serialize()
+        if not snapshot:
+            Debug.log_error("Scene serialization failed — play mode skipped")
+            return
+        pm._scene_backup = snapshot
+
+        # Reset timing
+        Time._reset()
+
+        # Rebuild scene from snapshot to get fresh component instances in play mode
+        RenderStack._active_instance = None
+        scene.deserialize(snapshot)
+        InfComponent._clear_all_instances()
+        BuiltinComponent._clear_cache()
+
+        # Mark scene as playing BEFORE restoring Python components
+        scene.set_playing(True)
+
+        # Activate play mode state so tick() / is_playing work correctly
+        pm._state = PlayModeState.PLAYING
+        pm._last_frame_time = __import__("time").time()
+
+        # Restore Python components BEFORE sm.play() — matches the editor
+        # flow (_rebuild_active_scene restores components, then step_activate
+        # calls sm.play on the next frame).  If sm.play() runs first,
+        # Scene::Start() sees zero Python components and sets
+        # m_hasStarted = true, causing later-added components to have their
+        # start() queued instead of called synchronously.
+        pm._restore_pending_py_components()
+
+        # Tell C++ SceneManager to enter play mode (drives lifecycle updates)
+        sm.play()
+
+        # Transition state
+        pm._notify_state_change(PlayModeState.EDIT, PlayModeState.PLAYING)
+
+        Debug.log_internal("Player: Play mode activated")

@@ -1,0 +1,1170 @@
+#include "InfMaterial.h"
+#include <algorithm>
+#include <core/log/InfLog.h>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/scene/MeshRenderer.h>
+#include <functional>
+#include <nlohmann/json.hpp>
+#include <sstream>
+#include <unordered_set>
+
+using json = nlohmann::json;
+
+namespace infengine
+{
+
+// ============================================================================
+// RenderState Implementation
+// ============================================================================
+
+bool RenderState::operator==(const RenderState &other) const
+{
+    return cullMode == other.cullMode && frontFace == other.frontFace && polygonMode == other.polygonMode &&
+           depthBiasEnable == other.depthBiasEnable && depthBiasConstantFactor == other.depthBiasConstantFactor &&
+           depthBiasSlopeFactor == other.depthBiasSlopeFactor && depthBiasClamp == other.depthBiasClamp &&
+           topology == other.topology && depthTestEnable == other.depthTestEnable &&
+           depthWriteEnable == other.depthWriteEnable && depthCompareOp == other.depthCompareOp &&
+           stencilTestEnable == other.stencilTestEnable &&
+           std::memcmp(&stencilFront, &other.stencilFront, sizeof(VkStencilOpState)) == 0 &&
+           std::memcmp(&stencilBack, &other.stencilBack, sizeof(VkStencilOpState)) == 0 &&
+           blendEnable == other.blendEnable && srcColorBlendFactor == other.srcColorBlendFactor &&
+           dstColorBlendFactor == other.dstColorBlendFactor && srcAlphaBlendFactor == other.srcAlphaBlendFactor &&
+           dstAlphaBlendFactor == other.dstAlphaBlendFactor && colorBlendOp == other.colorBlendOp &&
+           alphaBlendOp == other.alphaBlendOp && alphaClipEnabled == other.alphaClipEnabled &&
+           alphaClipThreshold == other.alphaClipThreshold && renderQueue == other.renderQueue;
+}
+
+size_t RenderState::Hash() const
+{
+    size_t hash = 0;
+    auto hashCombine = [&hash](size_t value) { hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2); };
+
+    hashCombine(static_cast<size_t>(cullMode));
+    hashCombine(static_cast<size_t>(frontFace));
+    hashCombine(static_cast<size_t>(polygonMode));
+    hashCombine(static_cast<size_t>(depthBiasEnable));
+    if (depthBiasEnable) {
+        hashCombine(std::hash<float>{}(depthBiasConstantFactor));
+        hashCombine(std::hash<float>{}(depthBiasSlopeFactor));
+        hashCombine(std::hash<float>{}(depthBiasClamp));
+    }
+    hashCombine(static_cast<size_t>(topology));
+    hashCombine(static_cast<size_t>(depthTestEnable));
+    hashCombine(static_cast<size_t>(depthWriteEnable));
+    hashCombine(static_cast<size_t>(depthCompareOp));
+    hashCombine(static_cast<size_t>(stencilTestEnable));
+    if (stencilTestEnable) {
+        hashCombine(static_cast<size_t>(stencilFront.failOp));
+        hashCombine(static_cast<size_t>(stencilFront.passOp));
+        hashCombine(static_cast<size_t>(stencilFront.depthFailOp));
+        hashCombine(static_cast<size_t>(stencilFront.compareOp));
+        hashCombine(static_cast<size_t>(stencilFront.compareMask));
+        hashCombine(static_cast<size_t>(stencilFront.writeMask));
+        hashCombine(static_cast<size_t>(stencilFront.reference));
+        hashCombine(static_cast<size_t>(stencilBack.failOp));
+        hashCombine(static_cast<size_t>(stencilBack.passOp));
+        hashCombine(static_cast<size_t>(stencilBack.depthFailOp));
+        hashCombine(static_cast<size_t>(stencilBack.compareOp));
+        hashCombine(static_cast<size_t>(stencilBack.compareMask));
+        hashCombine(static_cast<size_t>(stencilBack.writeMask));
+        hashCombine(static_cast<size_t>(stencilBack.reference));
+    }
+    hashCombine(static_cast<size_t>(blendEnable));
+    hashCombine(static_cast<size_t>(srcColorBlendFactor));
+    hashCombine(static_cast<size_t>(dstColorBlendFactor));
+    hashCombine(static_cast<size_t>(srcAlphaBlendFactor));
+    hashCombine(static_cast<size_t>(dstAlphaBlendFactor));
+    hashCombine(static_cast<size_t>(colorBlendOp));
+    hashCombine(static_cast<size_t>(alphaBlendOp));
+    hashCombine(static_cast<size_t>(alphaClipEnabled));
+    if (alphaClipEnabled)
+        hashCombine(std::hash<float>{}(alphaClipThreshold));
+    hashCombine(static_cast<size_t>(renderQueue));
+
+    return hash;
+}
+
+// ============================================================================
+// InfMaterial Implementation
+// ============================================================================
+
+InfMaterial::InfMaterial(const std::string &name) : m_name(name)
+{
+}
+
+InfMaterial::InfMaterial(const std::string &name, const std::string &shaderName)
+    : m_name(name), m_vertShaderName(shaderName), m_fragShaderName(shaderName)
+{
+}
+
+void InfMaterial::SetFloat(const std::string &name, float value)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Float, value};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetVector2(const std::string &name, const glm::vec2 &value)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Float2, value};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetVector3(const std::string &name, const glm::vec3 &value)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Float3, value};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetVector4(const std::string &name, const glm::vec4 &value)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Float4, value};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetColor(const std::string &name, const glm::vec4 &color)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Color, color};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetInt(const std::string &name, int value)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Int, value};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetMatrix(const std::string &name, const glm::mat4 &matrix)
+{
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Mat4, matrix};
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InfMaterial::SetTextureGuid(const std::string &name, const std::string &textureGuid)
+{
+    // Early-out: skip if the GUID is already identical (avoids dirty flag + GPU rebuild).
+    auto it = m_properties.find(name);
+    if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
+        const auto *existing = std::get_if<std::string>(&it->second.value);
+        if (existing && *existing == textureGuid)
+            return;
+    }
+
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, textureGuid};
+    m_propertiesDirty = true;
+    ++m_version;
+
+    // Update dependency graph: this material depends on the texture (by GUID).
+    if (!m_guid.empty() && !textureGuid.empty()) {
+        AssetDependencyGraph::Instance().AddDependency(m_guid, textureGuid);
+    }
+}
+
+void InfMaterial::ClearTexture(const std::string &name)
+{
+    auto it = m_properties.find(name);
+    if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
+        const auto *oldGuid = std::get_if<std::string>(&it->second.value);
+        // Early-out: already cleared.
+        if (oldGuid && oldGuid->empty())
+            return;
+        // Remove dependency for the old texture GUID
+        if (!m_guid.empty() && oldGuid && !oldGuid->empty()) {
+            AssetDependencyGraph::Instance().RemoveDependency(m_guid, *oldGuid);
+        }
+        it->second.value = std::string{};
+        m_propertiesDirty = true;
+        ++m_version;
+    }
+}
+
+bool InfMaterial::HasProperty(const std::string &name) const
+{
+    return m_properties.find(name) != m_properties.end();
+}
+
+const MaterialProperty *InfMaterial::GetProperty(const std::string &name) const
+{
+    auto it = m_properties.find(name);
+    if (it != m_properties.end()) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+size_t InfMaterial::GetPipelineHash() const
+{
+    size_t hash = 0;
+    auto hashCombine = [&hash](size_t value) { hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2); };
+
+    // Hash shader names
+    hashCombine(std::hash<std::string>{}(m_vertShaderName));
+    hashCombine(std::hash<std::string>{}(m_fragShaderName));
+
+    // Hash render state
+    hashCombine(m_renderState.Hash());
+
+    return hash;
+}
+
+void InfMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::string &depthWrite,
+                                        const std::string &depthTest, const std::string &blend, int queue,
+                                        const std::string &passTag, const std::string &stencil,
+                                        const std::string &alphaClip)
+{
+    bool changed = false;
+
+    // @cull: none / front / back — skip if user has overridden CullMode
+    if (!cullMode.empty() && !HasOverride(RenderStateOverride::CullMode)) {
+        VkCullModeFlags newCull = m_renderState.cullMode;
+        if (cullMode == "none" || cullMode == "off")
+            newCull = VK_CULL_MODE_NONE;
+        else if (cullMode == "front")
+            newCull = VK_CULL_MODE_FRONT_BIT;
+        else if (cullMode == "back")
+            newCull = VK_CULL_MODE_BACK_BIT;
+        if (newCull != m_renderState.cullMode) {
+            m_renderState.cullMode = newCull;
+            changed = true;
+        }
+    }
+
+    // @depth_write: on / off — skip if user has overridden DepthWrite
+    if (!depthWrite.empty() && !HasOverride(RenderStateOverride::DepthWrite)) {
+        bool newDW = m_renderState.depthWriteEnable;
+        if (depthWrite == "on" || depthWrite == "true")
+            newDW = true;
+        else if (depthWrite == "off" || depthWrite == "false")
+            newDW = false;
+        if (newDW != m_renderState.depthWriteEnable) {
+            m_renderState.depthWriteEnable = newDW;
+            changed = true;
+        }
+    }
+
+    // @depth_test: on / off / less / less_equal / always / never
+    // Skip if user has overridden DepthTest or DepthCompareOp
+    if (!depthTest.empty() && !HasOverride(RenderStateOverride::DepthTest)) {
+        if (depthTest == "off" || depthTest == "false") {
+            if (m_renderState.depthTestEnable) {
+                m_renderState.depthTestEnable = false;
+                changed = true;
+            }
+        } else {
+            if (!m_renderState.depthTestEnable) {
+                m_renderState.depthTestEnable = true;
+                changed = true;
+            }
+            if (!HasOverride(RenderStateOverride::DepthCompareOp)) {
+                VkCompareOp newOp = m_renderState.depthCompareOp;
+                if (depthTest == "on" || depthTest == "true" || depthTest == "less")
+                    newOp = VK_COMPARE_OP_LESS;
+                else if (depthTest == "less_equal")
+                    newOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+                else if (depthTest == "always")
+                    newOp = VK_COMPARE_OP_ALWAYS;
+                else if (depthTest == "never")
+                    newOp = VK_COMPARE_OP_NEVER;
+                else if (depthTest == "greater")
+                    newOp = VK_COMPARE_OP_GREATER;
+                else if (depthTest == "greater_equal")
+                    newOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+                if (newOp != m_renderState.depthCompareOp) {
+                    m_renderState.depthCompareOp = newOp;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    // @blend: off / alpha / additive — skip if user has overridden BlendEnable or BlendMode
+    if (!blend.empty() && !HasOverride(RenderStateOverride::BlendEnable)) {
+        if (blend == "off" || blend == "false") {
+            if (m_renderState.blendEnable) {
+                m_renderState.blendEnable = false;
+                changed = true;
+            }
+        } else if (!HasOverride(RenderStateOverride::BlendMode)) {
+            if (blend == "alpha") {
+                m_renderState.blendEnable = true;
+                m_renderState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+                m_renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                m_renderState.colorBlendOp = VK_BLEND_OP_ADD;
+                // Preserve destination alpha so the scene texture stays opaque
+                // when displayed in ImGui viewport (alpha=1.0 from opaque pass).
+                m_renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                m_renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                m_renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+                changed = true;
+            } else if (blend == "additive") {
+                m_renderState.blendEnable = true;
+                m_renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                m_renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                m_renderState.colorBlendOp = VK_BLEND_OP_ADD;
+                m_renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                m_renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                m_renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+                changed = true;
+            }
+        }
+    }
+
+    // @queue: integer render queue — skip if overridden or builtin
+    if (!m_builtin && !HasOverride(RenderStateOverride::RenderQueue) && queue >= 0 &&
+        queue != m_renderState.renderQueue) {
+        m_renderState.renderQueue = queue;
+        changed = true;
+    }
+
+    // @pass_tag: set material pass tag for draw call filtering
+    // Skip for builtin materials — same reason as renderQueue above.
+    if (!m_builtin && !passTag.empty() && passTag != m_passTag) {
+        m_passTag = passTag;
+    }
+
+    // @stencil: compare_op, ref, pass_op, fail_op, depth_fail_op
+    if (!stencil.empty()) {
+        // Helper to parse VkStencilOp from string
+        auto parseStencilOp = [](const std::string &s) -> VkStencilOp {
+            if (s == "keep")
+                return VK_STENCIL_OP_KEEP;
+            if (s == "zero")
+                return VK_STENCIL_OP_ZERO;
+            if (s == "replace")
+                return VK_STENCIL_OP_REPLACE;
+            if (s == "incr" || s == "increment_clamp")
+                return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+            if (s == "decr" || s == "decrement_clamp")
+                return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+            if (s == "invert")
+                return VK_STENCIL_OP_INVERT;
+            if (s == "incr_wrap" || s == "increment_wrap")
+                return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+            if (s == "decr_wrap" || s == "decrement_wrap")
+                return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+            return VK_STENCIL_OP_KEEP;
+        };
+        auto parseCompareOp = [](const std::string &s) -> VkCompareOp {
+            if (s == "never")
+                return VK_COMPARE_OP_NEVER;
+            if (s == "less")
+                return VK_COMPARE_OP_LESS;
+            if (s == "equal")
+                return VK_COMPARE_OP_EQUAL;
+            if (s == "less_equal")
+                return VK_COMPARE_OP_LESS_OR_EQUAL;
+            if (s == "greater")
+                return VK_COMPARE_OP_GREATER;
+            if (s == "not_equal")
+                return VK_COMPARE_OP_NOT_EQUAL;
+            if (s == "greater_equal")
+                return VK_COMPARE_OP_GREATER_OR_EQUAL;
+            if (s == "always")
+                return VK_COMPARE_OP_ALWAYS;
+            return VK_COMPARE_OP_ALWAYS;
+        };
+
+        // Parse comma-separated fields: compare, ref, pass, fail, zfail
+        std::vector<std::string> parts;
+        std::istringstream ss(stencil);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            size_t s = token.find_first_not_of(" \t");
+            size_t e = token.find_last_not_of(" \t");
+            if (s != std::string::npos && e != std::string::npos)
+                parts.push_back(token.substr(s, e - s + 1));
+        }
+
+        if (parts.size() >= 2) {
+            VkStencilOpState opState{};
+            opState.compareOp = parseCompareOp(parts[0]);
+            try {
+                opState.reference = static_cast<uint32_t>(std::stoi(parts[1]));
+            } catch (...) {
+                opState.reference = 0;
+            }
+            opState.passOp = (parts.size() > 2) ? parseStencilOp(parts[2]) : VK_STENCIL_OP_KEEP;
+            opState.failOp = (parts.size() > 3) ? parseStencilOp(parts[3]) : VK_STENCIL_OP_KEEP;
+            opState.depthFailOp = (parts.size() > 4) ? parseStencilOp(parts[4]) : VK_STENCIL_OP_KEEP;
+            opState.compareMask = 0xFF;
+            opState.writeMask = 0xFF;
+
+            m_renderState.stencilTestEnable = true;
+            m_renderState.stencilFront = opState;
+            m_renderState.stencilBack = opState;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        m_pipelineDirty = true;
+    }
+
+    // @alpha_clip: <threshold> — skip if user has overridden AlphaClip
+    if (!alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip)) {
+        m_renderState.alphaClipEnabled = true;
+        try {
+            m_renderState.alphaClipThreshold = std::stof(alphaClip);
+        } catch (...) {
+            m_renderState.alphaClipThreshold = 0.5f;
+        }
+        SyncAlphaClipProperty();
+    } else if ((alphaClip.empty() || alphaClip == "off") && !HasOverride(RenderStateOverride::AlphaClip)) {
+        if (m_renderState.alphaClipEnabled) {
+            m_renderState.alphaClipEnabled = false;
+            SyncAlphaClipProperty();
+        }
+    }
+}
+
+void InfMaterial::SyncAlphaClipProperty()
+{
+    float value = m_renderState.alphaClipEnabled ? m_renderState.alphaClipThreshold : 0.0f;
+    SetFloat("_AlphaClipThreshold", value);
+}
+
+std::string InfMaterial::Serialize() const
+{
+    json j;
+    j["material_version"] = 3;
+    j["name"] = m_name;
+
+    // Shader identity — separate vertex/fragment keys.
+    j["shaders"]["vertex"] = m_vertShaderName;
+    j["shaders"]["fragment"] = m_fragShaderName;
+
+    // Render state
+    json rs;
+    rs["cullMode"] = static_cast<int>(m_renderState.cullMode);
+    rs["frontFace"] = static_cast<int>(m_renderState.frontFace);
+    rs["polygonMode"] = static_cast<int>(m_renderState.polygonMode);
+    rs["depthTestEnable"] = m_renderState.depthTestEnable;
+    rs["depthWriteEnable"] = m_renderState.depthWriteEnable;
+    rs["depthCompareOp"] = static_cast<int>(m_renderState.depthCompareOp);
+    rs["blendEnable"] = m_renderState.blendEnable;
+    rs["srcColorBlendFactor"] = static_cast<int>(m_renderState.srcColorBlendFactor);
+    rs["dstColorBlendFactor"] = static_cast<int>(m_renderState.dstColorBlendFactor);
+    rs["colorBlendOp"] = static_cast<int>(m_renderState.colorBlendOp);
+    rs["alphaClipEnabled"] = m_renderState.alphaClipEnabled;
+    rs["alphaClipThreshold"] = m_renderState.alphaClipThreshold;
+    rs["renderQueue"] = m_renderState.renderQueue;
+    rs["stencilTestEnable"] = m_renderState.stencilTestEnable;
+    if (m_renderState.stencilTestEnable) {
+        auto stencilOpToJson = [](const VkStencilOpState &op) {
+            json s;
+            s["failOp"] = static_cast<int>(op.failOp);
+            s["passOp"] = static_cast<int>(op.passOp);
+            s["depthFailOp"] = static_cast<int>(op.depthFailOp);
+            s["compareOp"] = static_cast<int>(op.compareOp);
+            s["compareMask"] = op.compareMask;
+            s["writeMask"] = op.writeMask;
+            s["reference"] = op.reference;
+            return s;
+        };
+        rs["stencilFront"] = stencilOpToJson(m_renderState.stencilFront);
+        rs["stencilBack"] = stencilOpToJson(m_renderState.stencilBack);
+    }
+    j["renderState"] = rs;
+
+    // Pass tag for draw call filtering
+    if (!m_passTag.empty()) {
+        j["passTag"] = m_passTag;
+    }
+
+    // Render state override bitmask (which fields user has manually set)
+    if (m_renderStateOverrides != 0) {
+        j["renderStateOverrides"] = m_renderStateOverrides;
+    }
+
+    // Properties
+    json props = json::object();
+    for (const auto &[propName, prop] : m_properties) {
+        // Skip engine-internal properties derived from renderState
+        if (propName == "_AlphaClipThreshold")
+            continue;
+        json propJson;
+        propJson["type"] = static_cast<int>(prop.type);
+
+        switch (prop.type) {
+        case MaterialPropertyType::Float:
+            propJson["value"] = std::get<float>(prop.value);
+            break;
+        case MaterialPropertyType::Float2: {
+            auto v = std::get<glm::vec2>(prop.value);
+            propJson["value"] = {v.x, v.y};
+            break;
+        }
+        case MaterialPropertyType::Float3: {
+            auto v = std::get<glm::vec3>(prop.value);
+            propJson["value"] = {v.x, v.y, v.z};
+            break;
+        }
+        case MaterialPropertyType::Float4:
+        case MaterialPropertyType::Color: {
+            auto v = std::get<glm::vec4>(prop.value);
+            propJson["value"] = {v.x, v.y, v.z, v.w};
+            break;
+        }
+        case MaterialPropertyType::Int:
+            propJson["value"] = std::get<int>(prop.value);
+            break;
+        case MaterialPropertyType::Mat4: {
+            auto m = std::get<glm::mat4>(prop.value);
+            json matArr = json::array();
+            for (int i = 0; i < 4; i++) {
+                for (int k = 0; k < 4; k++) {
+                    matArr.push_back(m[i][k]);
+                }
+            }
+            propJson["value"] = matArr;
+            break;
+        }
+        case MaterialPropertyType::Texture2D:
+            propJson["guid"] = std::get<std::string>(prop.value);
+            break;
+        }
+        props[propName] = propJson;
+    }
+    j["properties"] = props;
+
+    return j.dump(2);
+}
+
+bool InfMaterial::SaveToFile() const
+{
+    if (m_isDeleted) {
+        INFLOG_WARN("InfMaterial::SaveToFile: material '", m_name, "' is deleted, refusing to write");
+        return false;
+    }
+    if (m_filePath.empty()) {
+        INFLOG_WARN("InfMaterial::SaveToFile: No file path set for material '", m_name, "'");
+        return false;
+    }
+    try {
+        std::string jsonStr = Serialize();
+        std::ofstream file(m_filePath);
+        if (!file.is_open()) {
+            INFLOG_ERROR("InfMaterial::SaveToFile: Failed to open file '", m_filePath, "'");
+            return false;
+        }
+        file << jsonStr;
+        file.close();
+        INFLOG_DEBUG("InfMaterial::SaveToFile: Saved material '", m_name, "' to '", m_filePath, "'");
+        return true;
+    } catch (const std::exception &e) {
+        INFLOG_ERROR("InfMaterial::SaveToFile: Exception - ", e.what());
+        return false;
+    }
+}
+
+bool InfMaterial::SaveToFile(const std::string &path)
+{
+    if (m_isDeleted) {
+        INFLOG_WARN("InfMaterial::SaveToFile: material '", m_name, "' is deleted, refusing to write");
+        return false;
+    }
+    try {
+        std::string jsonStr = Serialize();
+        std::ofstream file(path);
+        if (!file.is_open()) {
+            INFLOG_ERROR("InfMaterial::SaveToFile: Failed to open file '", path, "'");
+            return false;
+        }
+        file << jsonStr;
+        file.close();
+
+        // Update stored file path
+        const_cast<InfMaterial *>(this)->m_filePath = path;
+
+        INFLOG_DEBUG("InfMaterial::SaveToFile: Saved material '", m_name, "' to '", path, "'");
+        return true;
+    } catch (const std::exception &e) {
+        INFLOG_ERROR("InfMaterial::SaveToFile: Exception - ", e.what());
+        return false;
+    }
+}
+
+bool InfMaterial::Deserialize(const std::string &jsonStr)
+{
+    try {
+        json j = json::parse(jsonStr);
+        const int materialVersion = j.value("material_version", 1);
+
+        if (j.contains("name")) {
+            m_name = j["name"].get<std::string>();
+        }
+        // GUID is set by AssetRegistry from AssetDatabase.
+        // "builtin" is a runtime flag set during initialization.
+        if (j.contains("builtin")) {
+            m_builtin = j["builtin"].get<bool>();
+        }
+
+        // Shader name — supports separate vertex/fragment identities.
+        if (j.contains("shaders")) {
+            auto &shaders = j["shaders"];
+            if (shaders.contains("name")) {
+                // Legacy format: single "name" for both vert and frag.
+                std::string n = shaders["name"].get<std::string>();
+                m_vertShaderName = n;
+                m_fragShaderName = n;
+            } else {
+                if (shaders.contains("vertex")) {
+                    m_vertShaderName = shaders["vertex"].get<std::string>();
+                }
+                if (shaders.contains("fragment")) {
+                    m_fragShaderName = shaders["fragment"].get<std::string>();
+                }
+                // If only one key is present, mirror to the other.
+                if (m_vertShaderName.empty() && !m_fragShaderName.empty()) {
+                    m_vertShaderName = m_fragShaderName;
+                } else if (m_fragShaderName.empty() && !m_vertShaderName.empty()) {
+                    m_fragShaderName = m_vertShaderName;
+                }
+            }
+        }
+
+        // Render state
+        if (j.contains("renderState")) {
+            auto &rs = j["renderState"];
+            if (rs.contains("cullMode"))
+                m_renderState.cullMode = static_cast<VkCullModeFlags>(rs["cullMode"].get<int>());
+            if (rs.contains("frontFace"))
+                m_renderState.frontFace = static_cast<VkFrontFace>(rs["frontFace"].get<int>());
+            if (rs.contains("polygonMode"))
+                m_renderState.polygonMode = static_cast<VkPolygonMode>(rs["polygonMode"].get<int>());
+            if (rs.contains("depthTestEnable"))
+                m_renderState.depthTestEnable = rs["depthTestEnable"].get<bool>();
+            if (rs.contains("depthWriteEnable"))
+                m_renderState.depthWriteEnable = rs["depthWriteEnable"].get<bool>();
+            if (rs.contains("depthCompareOp"))
+                m_renderState.depthCompareOp = static_cast<VkCompareOp>(rs["depthCompareOp"].get<int>());
+            if (rs.contains("blendEnable"))
+                m_renderState.blendEnable = rs["blendEnable"].get<bool>();
+            if (rs.contains("srcColorBlendFactor"))
+                m_renderState.srcColorBlendFactor = static_cast<VkBlendFactor>(rs["srcColorBlendFactor"].get<int>());
+            if (rs.contains("dstColorBlendFactor"))
+                m_renderState.dstColorBlendFactor = static_cast<VkBlendFactor>(rs["dstColorBlendFactor"].get<int>());
+            if (rs.contains("colorBlendOp"))
+                m_renderState.colorBlendOp = static_cast<VkBlendOp>(rs["colorBlendOp"].get<int>());
+            if (rs.contains("alphaClipEnabled"))
+                m_renderState.alphaClipEnabled = rs["alphaClipEnabled"].get<bool>();
+            if (rs.contains("alphaClipThreshold"))
+                m_renderState.alphaClipThreshold = rs["alphaClipThreshold"].get<float>();
+            if (rs.contains("renderQueue"))
+                m_renderState.renderQueue = rs["renderQueue"].get<int32_t>();
+            if (rs.contains("stencilTestEnable"))
+                m_renderState.stencilTestEnable = rs["stencilTestEnable"].get<bool>();
+            auto jsonToStencilOp = [](const json &s) {
+                VkStencilOpState op{};
+                if (s.contains("failOp"))
+                    op.failOp = static_cast<VkStencilOp>(s["failOp"].get<int>());
+                if (s.contains("passOp"))
+                    op.passOp = static_cast<VkStencilOp>(s["passOp"].get<int>());
+                if (s.contains("depthFailOp"))
+                    op.depthFailOp = static_cast<VkStencilOp>(s["depthFailOp"].get<int>());
+                if (s.contains("compareOp"))
+                    op.compareOp = static_cast<VkCompareOp>(s["compareOp"].get<int>());
+                if (s.contains("compareMask"))
+                    op.compareMask = s["compareMask"].get<uint32_t>();
+                if (s.contains("writeMask"))
+                    op.writeMask = s["writeMask"].get<uint32_t>();
+                if (s.contains("reference"))
+                    op.reference = s["reference"].get<uint32_t>();
+                return op;
+            };
+            if (rs.contains("stencilFront"))
+                m_renderState.stencilFront = jsonToStencilOp(rs["stencilFront"]);
+            if (rs.contains("stencilBack"))
+                m_renderState.stencilBack = jsonToStencilOp(rs["stencilBack"]);
+
+            // Coordinate-system migration: materials saved before v3 used the
+            // old front-face convention. Flip the stored value once on load so
+            // existing assets keep the same visible culling behaviour.
+            if (materialVersion < 3 && rs.contains("frontFace")) {
+                if (m_renderState.frontFace == VK_FRONT_FACE_CLOCKWISE) {
+                    m_renderState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+                } else if (m_renderState.frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE) {
+                    m_renderState.frontFace = VK_FRONT_FACE_CLOCKWISE;
+                }
+            }
+        }
+
+        // Pass tag
+        if (j.contains("passTag")) {
+            m_passTag = j["passTag"].get<std::string>();
+        }
+
+        // Render state override bitmask
+        if (j.contains("renderStateOverrides")) {
+            m_renderStateOverrides = j["renderStateOverrides"].get<uint32_t>();
+        } else {
+            m_renderStateOverrides = 0;
+        }
+
+        // Properties
+        if (j.contains("properties") && j["properties"].is_object()) {
+            m_properties.clear();
+            for (auto &[propName, propJson] : j["properties"].items()) {
+                MaterialProperty prop;
+                prop.name = propName;
+                prop.type = static_cast<MaterialPropertyType>(propJson["type"].get<int>());
+
+                switch (prop.type) {
+                case MaterialPropertyType::Float:
+                    prop.value = propJson["value"].get<float>();
+                    break;
+                case MaterialPropertyType::Float2:
+                    prop.value = glm::vec2(propJson["value"][0].get<float>(), propJson["value"][1].get<float>());
+                    break;
+                case MaterialPropertyType::Float3:
+                    prop.value = glm::vec3(propJson["value"][0].get<float>(), propJson["value"][1].get<float>(),
+                                           propJson["value"][2].get<float>());
+                    break;
+                case MaterialPropertyType::Float4:
+                case MaterialPropertyType::Color:
+                    prop.value = glm::vec4(propJson["value"][0].get<float>(), propJson["value"][1].get<float>(),
+                                           propJson["value"][2].get<float>(), propJson["value"][3].get<float>());
+                    break;
+                case MaterialPropertyType::Int:
+                    prop.value = propJson["value"].get<int>();
+                    break;
+                case MaterialPropertyType::Mat4: {
+                    glm::mat4 m;
+                    auto &arr = propJson["value"];
+                    for (int i = 0; i < 4; i++) {
+                        for (int k = 0; k < 4; k++) {
+                            m[i][k] = arr[i * 4 + k].get<float>();
+                        }
+                    }
+                    prop.value = m;
+                    break;
+                }
+                case MaterialPropertyType::Texture2D:
+                    // v2: texture GUID stored under "guid" key (only format)
+                    if (propJson.contains("guid")) {
+                        prop.value = propJson["guid"].get<std::string>();
+                    } else {
+                        prop.value = std::string{};
+                    }
+                    break;
+                }
+                m_properties[propName] = prop;
+            }
+        }
+
+        m_pipelineDirty = true;
+        m_propertiesDirty = true; // Ensure UBO gets updated with loaded values
+
+        // Sync the _AlphaClipThreshold property from the deserialized render state
+        SyncAlphaClipProperty();
+
+        return true;
+    } catch (const std::exception &e) {
+        INFLOG_ERROR("Failed to deserialize material: ", e.what());
+        return false;
+    }
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateDefaultLit()
+{
+    auto material = std::make_shared<InfMaterial>("DefaultLit");
+
+    // Use lit shader for default material (PBR-inspired Blinn-Phong)
+    material->SetShader("lit");
+
+    // Default lit opaque render state
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_BACK_BIT;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = true;
+    state.blendEnable = false;
+    state.renderQueue = 2000; // Opaque queue
+    material->SetRenderState(state);
+
+    // Default properties from lit shader annotations
+    material->SetColor("baseColor", glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    material->SetFloat("metallic", 0.0f);
+    material->SetFloat("smoothness", 0.5f);
+    material->SetFloat("ambientOcclusion", 1.0f);
+    material->SetColor("emissionColor", glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
+    material->SetFloat("normalScale", 1.0f);
+    material->SetFloat("specularHighlights", 1.0f);
+
+    // Mark as built-in (shader cannot be changed by user)
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateDefaultUnlit()
+{
+    auto material = std::make_shared<InfMaterial>("DefaultUnlit");
+
+    // Use shader_id for lookup (not filename) - shaders are registered by shader_id
+    material->SetShader("unlit");
+
+    // Default unlit opaque render state
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_BACK_BIT;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = true;
+    state.blendEnable = false;
+    state.renderQueue = 2000; // Opaque queue
+    material->SetRenderState(state);
+
+    // Default property from shader annotation: baseColor
+    material->SetColor("baseColor", glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateGizmoMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("GizmoMaterial");
+
+    // Use gizmo shader (simple unlit with vertex color)
+    material->SetShader("gizmo");
+
+    // Gizmo render state: no culling (double-sided), depth test, depth write
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE; // Double-sided for grid visibility
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = true;
+    state.blendEnable = false;
+    state.renderQueue = 20100; // Editor gizmo layer (20001-25000)
+    material->SetRenderState(state);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateGridMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("GridMaterial");
+
+    material->SetShader("InfEngine/Grid");
+
+    // Grid render state: double-sided, alpha-blended, depth test but no depth write
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false; // Transparent — don't write depth
+    state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    // Depth bias pushes the grid slightly behind coplanar geometry to avoid z-fighting
+    state.depthBiasEnable = true;
+    state.depthBiasConstantFactor = 2.0f;
+    state.depthBiasSlopeFactor = 2.0f;
+    state.depthBiasClamp = 0.01f;
+    state.blendEnable = true;
+    state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.colorBlendOp = VK_BLEND_OP_ADD;
+    // Alpha channel: preserve destination alpha (1.0 from opaques/skybox) so
+    // the scene texture stays fully opaque when displayed in ImGui viewport.
+    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.renderQueue = 20001; // Editor gizmo layer (20001-25000), renders after all user passes
+    material->SetRenderState(state);
+
+    // Default fade distances
+    material->SetFloat("fadeStart", 15.0f);
+    material->SetFloat("fadeEnd", 80.0f);
+
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateEditorToolsMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("EditorToolsMaterial");
+
+    // Same gizmo shader: simple unlit with vertex color
+    material->SetShader("gizmo");
+
+    // Editor tools render state: always on top (no depth test), double-sided
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = false;  // Render on top of everything
+    state.depthWriteEnable = false; // Don't affect depth buffer
+    state.blendEnable = false;
+    state.renderQueue = 25001; // Editor tools layer (25001-30000)
+    material->SetRenderState(state);
+
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateComponentGizmosMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("ComponentGizmosMaterial");
+
+    // Same gizmo shader: simple unlit with vertex color
+    material->SetShader("gizmo");
+
+    // Component gizmos: depth-tested (occluded by scene geometry), double-sided, LINE topology
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false; // Don't affect depth buffer
+    state.blendEnable = false;
+    state.renderQueue = 10000; // Component gizmos layer (10000-20000)
+    material->SetRenderState(state);
+
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateComponentGizmoIconMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("ComponentGizmoIconMaterial");
+
+    // Same gizmo shader: simple unlit with vertex color
+    material->SetShader("gizmo");
+
+    // Icon gizmos: TRIANGLE_LIST for filled diamond billboards,
+    // depth-tested (occluded by scene geometry), no depth write, double-sided
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false;
+    state.blendEnable = false;
+    state.renderQueue = 11000; // After component gizmo lines (10000), same pass
+    material->SetRenderState(state);
+
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateSkyboxProceduralMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("SkyboxProcedural");
+
+    // Use procedural skybox shader (registered by @shader_id in .vert/.frag)
+    material->SetShader("InfEngine/Skybox-Procedural");
+
+    // Skybox render state:
+    // - Cull back faces (the outside of the cube). In the LH coordinate system,
+    //   CW winding is front-facing. From inside the cube the camera sees indices
+    //   wound CW → front faces. Back-face culling removes the outside faces.
+    // - No depth write (skybox should always be behind everything)
+    // - Depth test <= (skybox writes z=1.0, passes only where nothing closer exists)
+    // - Render first in the opaque queue (low renderQueue)
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_BACK_BIT;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false;
+    state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    state.blendEnable = false;
+    state.renderQueue = 32767; // After all opaque/transparent, outside shadow caster range
+    material->SetRenderState(state);
+
+    // Default sky properties (matching shader @property annotations)
+    material->SetColor("skyTopColor", glm::vec4(0.20f, 0.28f, 0.46f, 1.0f));
+    material->SetColor("skyHorizonColor", glm::vec4(0.50f, 0.58f, 0.70f, 1.0f));
+    material->SetColor("groundColor", glm::vec4(0.24f, 0.22f, 0.22f, 1.0f));
+    material->SetFloat("exposure", 1.35f);
+
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+std::shared_ptr<InfMaterial> InfMaterial::CreateErrorMaterial()
+{
+    auto material = std::make_shared<InfMaterial>("ErrorMaterial");
+
+    // Use dedicated error shaders: unlit magenta-black checkerboard pattern.
+    // These shaders are self-contained (no material UBO, no textures) and
+    // output a procedural checkerboard using world-position + UV.
+    material->SetShader("error");
+
+    // Double-sided so the error pattern is visible from all angles
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = true;
+    state.blendEnable = false;
+    state.renderQueue = 2000; // Opaque queue
+    material->SetRenderState(state);
+
+    material->SetBuiltin(true);
+
+    return material;
+}
+
+// ============================================================================
+// MaterialManager Implementation
+// ============================================================================
+
+MaterialManager &MaterialManager::Instance()
+{
+    static MaterialManager instance;
+    return instance;
+}
+
+void MaterialManager::Initialize()
+{
+    if (m_initialized) {
+        return;
+    }
+
+    INFLOG_INFO("Initializing MaterialManager (thin cache — builtins owned by AssetRegistry)...");
+
+    auto &registry = AssetRegistry::Instance();
+
+    // Populate local pointers from AssetRegistry builtins
+    m_defaultMaterial = registry.GetBuiltinMaterial("DefaultLit");
+    m_gizmoMaterial = registry.GetBuiltinMaterial("GizmoMaterial");
+    m_gridMaterial = registry.GetBuiltinMaterial("GridMaterial");
+    m_componentGizmosMaterial = registry.GetBuiltinMaterial("ComponentGizmosMaterial");
+    m_componentGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoIconMaterial");
+    m_editorToolsMaterial = registry.GetBuiltinMaterial("EditorToolsMaterial");
+    m_skyboxMaterial = registry.GetBuiltinMaterial("SkyboxProcedural");
+    m_errorMaterial = registry.GetBuiltinMaterial("ErrorMaterial");
+
+    m_initialized = true;
+    INFLOG_INFO("MaterialManager initialized (delegates to AssetRegistry).");
+}
+
+bool MaterialManager::LoadDefaultMaterialFromFile(const std::string &matFilePath)
+{
+    if (matFilePath.empty()) {
+        return false;
+    }
+
+    try {
+        std::ifstream file(matFilePath);
+        if (!file.is_open()) {
+            INFLOG_WARN("MaterialManager: Could not open material file: ", matFilePath);
+            return false;
+        }
+
+        std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        file.close();
+
+        auto material = std::make_shared<InfMaterial>();
+        if (!material->Deserialize(jsonStr)) {
+            INFLOG_ERROR("MaterialManager: Failed to deserialize material from: ", matFilePath);
+            return false;
+        }
+
+        // Set the file path so changes can be saved back
+        material->SetFilePath(matFilePath);
+
+        // Replace the default material in both MaterialManager and AssetRegistry
+        m_defaultMaterial = material;
+        AssetRegistry::Instance().RegisterBuiltinMaterial("DefaultLit", material);
+
+        INFLOG_INFO("MaterialManager: Loaded default material from: ", matFilePath);
+        return true;
+    } catch (const std::exception &e) {
+        INFLOG_ERROR("MaterialManager: Exception loading material: ", e.what());
+        return false;
+    }
+}
+
+void MaterialManager::Shutdown()
+{
+    INFLOG_INFO("Shutting down MaterialManager...");
+    m_defaultMaterial.reset();
+    m_gizmoMaterial.reset();
+    m_gridMaterial.reset();
+    m_componentGizmosMaterial.reset();
+    m_componentGizmoIconMaterial.reset();
+    m_editorToolsMaterial.reset();
+    m_skyboxMaterial.reset();
+    m_errorMaterial.reset();
+    m_initialized = false;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetDefaultMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_defaultMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetGizmoMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_gizmoMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetGridMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_gridMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetComponentGizmosMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_componentGizmosMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetComponentGizmoIconMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_componentGizmoIconMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetEditorToolsMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_editorToolsMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetSkyboxMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_skyboxMaterial;
+}
+
+std::shared_ptr<InfMaterial> MaterialManager::GetErrorMaterial()
+{
+    if (!m_initialized) {
+        Initialize();
+    }
+    return m_errorMaterial;
+}
+
+} // namespace infengine

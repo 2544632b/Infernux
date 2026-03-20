@@ -1,0 +1,207 @@
+#pragma once
+
+#include <function/renderer/InfRenderStruct.h>
+
+#include <glm/glm.hpp>
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace infengine
+{
+
+/**
+ * @brief A contiguous range within a shared vertex/index buffer.
+ *
+ * Each SubMesh maps to exactly one material slot on the MeshRenderer.
+ * Multiple SubMeshes share the parent InfMesh's vertex and index arrays
+ * so a single GPU buffer upload serves the entire model.
+ */
+struct SubMesh
+{
+    uint32_t indexStart = 0;  ///< First index in the parent index array
+    uint32_t indexCount = 0;  ///< Number of indices (must be a multiple of 3)
+    uint32_t vertexStart = 0; ///< First vertex in the parent vertex array (base-vertex offset)
+    uint32_t vertexCount = 0; ///< Number of vertices referenced by this submesh
+
+    uint32_t materialSlot = 0; ///< Material slot index (0-based, maps to MeshRenderer.materials[])
+    uint32_t nodeGroup = 0;    ///< Source node group (meshes under the same DCC node share the same group)
+
+    glm::vec3 boundsMin{0.0f}; ///< Local-space AABB minimum
+    glm::vec3 boundsMax{0.0f}; ///< Local-space AABB maximum
+
+    std::string name; ///< Optional submesh name (from DCC tool, e.g. "Body", "Glass")
+};
+
+/**
+ * @brief Runtime mesh asset — the loaded, GPU-ready representation of a 3D model.
+ *
+ * InfMesh is the engine's canonical mesh data container, analogous to
+ * Unity's Mesh or UE5's UStaticMesh.  It stores all geometry for a model
+ * file (.fbx, .obj, .gltf, …) as a single pair of vertex/index arrays
+ * partitioned into SubMeshes.
+ *
+ * Design decisions:
+ *   - **Single buffer, multiple submeshes** — minimises GPU buffer count
+ *     and allows one vkCmdBindVertexBuffers per model regardless of
+ *     how many material slots it uses.
+ *   - **Source file is the truth** — no intermediate .mesh format.
+ *     The original .fbx/.obj/.gltf is re-parsed by Assimp at load time.
+ *     A binary cache can be added later as an optimisation.
+ *   - **Vertex layout matches the engine's `Vertex` struct** — Assimp
+ *     data is converted once during loading; no runtime format conversion.
+ *
+ * Ownership: managed by AssetRegistry via shared_ptr<InfMesh>.
+ * MeshRenderers hold AssetRef<InfMesh> resolved through the registry.
+ */
+class InfMesh
+{
+  public:
+    InfMesh() = default;
+    explicit InfMesh(const std::string &name) : m_name(name)
+    {
+    }
+
+    // ── Identification ───────────────────────────────────────────────────
+
+    [[nodiscard]] const std::string &GetName() const
+    {
+        return m_name;
+    }
+    void SetName(const std::string &name)
+    {
+        m_name = name;
+    }
+
+    [[nodiscard]] const std::string &GetGuid() const
+    {
+        return m_guid;
+    }
+    void SetGuid(const std::string &guid)
+    {
+        m_guid = guid;
+    }
+
+    [[nodiscard]] const std::string &GetFilePath() const
+    {
+        return m_filePath;
+    }
+    void SetFilePath(const std::string &path)
+    {
+        m_filePath = path;
+    }
+
+    // ── Geometry data ────────────────────────────────────────────────────
+
+    [[nodiscard]] const std::vector<Vertex> &GetVertices() const
+    {
+        return m_vertices;
+    }
+    [[nodiscard]] const std::vector<uint32_t> &GetIndices() const
+    {
+        return m_indices;
+    }
+
+    [[nodiscard]] uint32_t GetVertexCount() const
+    {
+        return static_cast<uint32_t>(m_vertices.size());
+    }
+    [[nodiscard]] uint32_t GetIndexCount() const
+    {
+        return static_cast<uint32_t>(m_indices.size());
+    }
+
+    // ── SubMesh access ───────────────────────────────────────────────────
+
+    [[nodiscard]] const std::vector<SubMesh> &GetSubMeshes() const
+    {
+        return m_subMeshes;
+    }
+    [[nodiscard]] uint32_t GetSubMeshCount() const
+    {
+        return static_cast<uint32_t>(m_subMeshes.size());
+    }
+    [[nodiscard]] const SubMesh &GetSubMesh(uint32_t index) const
+    {
+        return m_subMeshes.at(index);
+    }
+
+    // ── Bounds ───────────────────────────────────────────────────────────
+
+    [[nodiscard]] const glm::vec3 &GetBoundsMin() const
+    {
+        return m_boundsMin;
+    }
+    [[nodiscard]] const glm::vec3 &GetBoundsMax() const
+    {
+        return m_boundsMax;
+    }
+
+    // ── Material slot names (extracted from model file) ──────────────────
+
+    [[nodiscard]] const std::vector<std::string> &GetMaterialSlotNames() const
+    {
+        return m_materialSlotNames;
+    }
+    [[nodiscard]] uint32_t GetMaterialSlotCount() const
+    {
+        return static_cast<uint32_t>(m_materialSlotNames.size());
+    }
+
+    // ── Node group metadata (for per-object hierarchy) ────────────────
+
+    [[nodiscard]] const std::vector<std::string> &GetNodeNames() const
+    {
+        return m_nodeNames;
+    }
+    [[nodiscard]] uint32_t GetNodeGroupCount() const
+    {
+        return static_cast<uint32_t>(m_nodeNames.size());
+    }
+    void SetNodeNames(std::vector<std::string> names)
+    {
+        m_nodeNames = std::move(names);
+    }
+
+    // ── Builder API (called by MeshLoader during import) ─────────────────
+
+    /**
+     * @brief Set the mesh geometry and submesh layout.
+     *
+     * Takes ownership of the data via move.  Recomputes the overall AABB
+     * from the vertex positions.
+     */
+    void SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes);
+
+    /**
+     * @brief Set material slot names extracted from the model file.
+     *
+     * The i-th name corresponds to materialSlot i.  The MeshRenderer
+     * inspector uses these names as labels.
+     */
+    void SetMaterialSlotNames(std::vector<std::string> names)
+    {
+        m_materialSlotNames = std::move(names);
+    }
+
+  private:
+    std::string m_name;
+    std::string m_guid;
+    std::string m_filePath;
+
+    std::vector<Vertex> m_vertices;
+    std::vector<uint32_t> m_indices;
+    std::vector<SubMesh> m_subMeshes;
+
+    glm::vec3 m_boundsMin{0.0f};
+    glm::vec3 m_boundsMax{0.0f};
+
+    std::vector<std::string> m_materialSlotNames;
+    std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
+
+    /// Recompute m_boundsMin/Max from vertex positions.
+    void RecalculateBounds();
+};
+
+} // namespace infengine

@@ -1,0 +1,65 @@
+"""Type stubs for InfEngine.core.asset_ref."""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+
+class _AssetRefBase:
+    """Base class for GUID-based asset references."""
+
+    def __init__(self, guid: str = ..., path_hint: str = ...) -> None:
+        """Create an asset reference with an optional GUID and path hint."""
+        ...
+    @property
+    def guid(self) -> str:
+        """The globally unique identifier of the referenced asset."""
+        ...
+    @guid.setter
+    def guid(self, value: str) -> None: ...
+    @property
+    def path_hint(self) -> str:
+        """A file path hint for locating the asset."""
+        ...
+    @path_hint.setter
+    def path_hint(self, value: str) -> None: ...
+    def resolve(self) -> Optional[Any]:
+        """Resolve the reference and return the loaded asset."""
+        ...
+    def invalidate(self) -> None:
+        """Clear the cached resolved asset."""
+        ...
+    def to_dict(self) -> dict:
+        """Serialize the reference to a dictionary."""
+        ...
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> _AssetRefBase:
+        """Create an asset reference from a serialized dictionary."""
+        ...
+    @property
+    def display_name(self) -> str:
+        """A human-readable name for the referenced asset."""
+        ...
+    @property
+    def is_missing(self) -> bool:
+        """Whether the referenced asset cannot be found."""
+        ...
+    def __bool__(self) -> bool: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+
+class TextureRef(_AssetRefBase):
+    """Reference to a Texture asset."""
+    ...
+
+
+class ShaderRef(_AssetRefBase):
+    """Reference to a Shader asset."""
+    ...
+
+
+class AudioClipRef(_AssetRefBase):
+    """Reference to an AudioClip asset."""
+    ...

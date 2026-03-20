@@ -1,0 +1,578 @@
+"""
+Pythonic Material Wrapper (Phase 1)
+
+Wraps the C++ InfMaterial with context manager support, property caching,
+and a clean API suitable for AI-assisted development.
+
+Usage::
+
+    # Create via factory
+    mat = Material.create_lit("MyPBR")
+    mat.set_color("baseColor", 1.0, 0.5, 0.0)
+    mat.set_float("metallic", 0.9)
+    mat.set_float("smoothness", 0.9)
+
+    # Context manager for scoped lifecycle
+    with Material.create_lit("Temp") as mat:
+        mat.set_float("smoothness", 0.5)
+        renderer.material = mat
+    # mat is disposed on exit
+
+    # Load from file
+    mat = Material.load("materials/gold.mat")
+
+    # Assign to a MeshRenderer
+    mesh_renderer.render_material = mat.native
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Optional, Tuple
+
+from InfEngine.lib import InfMaterial
+
+
+class Material:
+    """Pythonic wrapper around C++ InfMaterial.
+
+    Provides:
+    - Context manager for scoped lifecycle
+    - Clean property setters/getters
+    - Factory methods matching Unity's Material API
+    - Serialization to/from dict
+    """
+
+    # Minimum interval (seconds) between disk writes for the same material.
+    _AUTOSAVE_MIN_INTERVAL: float = 0.5
+
+    # Class-level set of Material instances with pending throttled saves.
+    _pending_saves: set["Material"] = set()
+
+    # When True, auto-save is suppressed (e.g. during Play mode).
+    # Runtime material changes should be transient like Unity.
+    _suppress_auto_save: bool = False
+
+    def __init__(self, native: "InfMaterial"):
+        """Wrap an existing native InfMaterial.
+
+        Prefer using factory methods (create_lit, create_unlit, load) instead.
+        """
+        if native is None:
+            raise ValueError("Cannot wrap a None InfMaterial")
+        self._native = native
+        self._disposed = False
+        self._last_save_time: float = 0.0
+        self._save_pending: bool = False
+
+    # ==========================================================================
+    # Factory Methods
+    # ==========================================================================
+
+    @staticmethod
+    def create_lit(name: str = "New Material") -> "Material":
+        """Create a new PBR lit material (default_lit shader)."""
+        native = InfMaterial.create_default_lit(name)
+        return Material(native)
+
+    @staticmethod
+    def create_unlit(name: str = "Unlit Material") -> "Material":
+        """Create a new unlit material (default_unlit shader)."""
+        native = InfMaterial.create_default_unlit(name)
+        return Material(native)
+
+    @staticmethod
+    def from_native(native: "InfMaterial") -> "Material":
+        """Wrap an existing C++ InfMaterial."""
+        return Material(native)
+
+    @staticmethod
+    def load(file_path: str) -> Optional["Material"]:
+        """Load a material from a .mat file.
+
+        Uses AssetRegistry.load_material() so the returned instance is the
+        same shared object used by the renderer and Inspector.  This ensures
+        that property changes via set_color / set_float are immediately
+        visible everywhere (Unity-like behaviour).
+        """
+        try:
+            from InfEngine.lib import AssetRegistry
+            registry = AssetRegistry.instance()
+            native = registry.load_material(file_path)
+            if native is not None:
+                return Material(native)
+        except (RuntimeError, AttributeError, ImportError):
+            pass
+
+        # Fallback: standalone load (not registered in AssetRegistry)
+        import os
+        if not os.path.isfile(file_path):
+            return None
+        with open(file_path, "r", encoding="utf-8") as f:
+            json_str = f.read()
+        native = InfMaterial(file_path)
+        if native.deserialize(json_str):
+            native.file_path = file_path
+            return Material(native)
+        return None
+
+    @staticmethod
+    def get(name: str) -> Optional["Material"]:
+        """Look up a built-in material by name.
+
+        Queries AssetRegistry's builtin material map (keyed by name,
+        e.g. 'DefaultLit', 'ErrorMaterial').  Returns None if not found.
+        """
+        try:
+            from InfEngine.lib import AssetRegistry
+            registry = AssetRegistry.instance()
+            native = registry.get_builtin_material(name)
+            if native is not None:
+                return Material(native)
+        except (RuntimeError, AttributeError, ImportError):
+            pass
+        return None
+
+    # ==========================================================================
+    # Context Manager (scoped lifecycle)
+    # ==========================================================================
+
+    def __enter__(self) -> "Material":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.dispose()
+        return False
+
+    def dispose(self):
+        """Release this material reference."""
+        if not self._disposed and self._native is not None:
+            self._disposed = True
+            # Note: actual GPU resource cleanup happens in C++ destructor
+            # when the last shared_ptr reference is released.
+
+    # ==========================================================================
+    # Properties
+    # ==========================================================================
+
+    @property
+    def native(self) -> "InfMaterial":
+        """Access the underlying C++ InfMaterial (for passing to C++ APIs)."""
+        return self._native
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    @name.setter
+    def name(self, value: str):
+        self._native.name = value
+
+    @property
+    def guid(self) -> str:
+        return self._native.guid
+
+    @property
+    def render_queue(self) -> int:
+        return self._native.render_queue
+
+    @render_queue.setter
+    def render_queue(self, value: int):
+        self._native.render_queue = value
+
+    @property
+    def shader_name(self) -> str:
+        return self._native.shader_name
+
+    @shader_name.setter
+    def shader_name(self, name: str):
+        self._native.shader_name = name
+
+    @property
+    def vert_shader_name(self) -> str:
+        return self._native.vert_shader_name
+
+    @vert_shader_name.setter
+    def vert_shader_name(self, name: str):
+        self._native.vert_shader_name = name
+
+    @property
+    def frag_shader_name(self) -> str:
+        return self._native.frag_shader_name
+
+    @frag_shader_name.setter
+    def frag_shader_name(self, name: str):
+        self._native.frag_shader_name = name
+
+    def set_shader(self, shader_name: str):
+        """Set the material's shader by name (sets both vert and frag)."""
+        self._native.set_shader(shader_name)
+
+    @property
+    def is_builtin(self) -> bool:
+        return self._native.is_builtin
+
+    # ==========================================================================
+    # Render State Convenience Properties
+    # ==========================================================================
+
+    @property
+    def render_state_overrides(self) -> int:
+        """Bitmask of user-overridden RenderState fields."""
+        return self._native.render_state_overrides
+
+    @render_state_overrides.setter
+    def render_state_overrides(self, value: int):
+        self._native.render_state_overrides = value
+
+    @property
+    def cull_mode(self) -> int:
+        """VkCullModeFlags: 0=None, 1=Front, 2=Back."""
+        return self._native.get_render_state().cull_mode
+
+    @cull_mode.setter
+    def cull_mode(self, value: int):
+        state = self._native.get_render_state()
+        state.cull_mode = value
+        self._native.set_render_state(state)
+        from InfEngine.lib import RenderStateOverride
+        self._native.mark_override(RenderStateOverride.CULL_MODE)
+
+    @property
+    def depth_write_enable(self) -> bool:
+        return self._native.get_render_state().depth_write_enable
+
+    @depth_write_enable.setter
+    def depth_write_enable(self, value: bool):
+        state = self._native.get_render_state()
+        state.depth_write_enable = value
+        self._native.set_render_state(state)
+        from InfEngine.lib import RenderStateOverride
+        self._native.mark_override(RenderStateOverride.DEPTH_WRITE)
+
+    @property
+    def depth_test_enable(self) -> bool:
+        return self._native.get_render_state().depth_test_enable
+
+    @depth_test_enable.setter
+    def depth_test_enable(self, value: bool):
+        state = self._native.get_render_state()
+        state.depth_test_enable = value
+        self._native.set_render_state(state)
+        from InfEngine.lib import RenderStateOverride
+        self._native.mark_override(RenderStateOverride.DEPTH_TEST)
+
+    @property
+    def depth_compare_op(self) -> int:
+        """VkCompareOp: 0=Never, 1=Less, 2=Equal, 3=LessOrEqual, etc."""
+        return self._native.get_render_state().depth_compare_op
+
+    @depth_compare_op.setter
+    def depth_compare_op(self, value: int):
+        state = self._native.get_render_state()
+        state.depth_compare_op = value
+        self._native.set_render_state(state)
+        from InfEngine.lib import RenderStateOverride
+        self._native.mark_override(RenderStateOverride.DEPTH_COMPARE_OP)
+
+    @property
+    def blend_enable(self) -> bool:
+        return self._native.get_render_state().blend_enable
+
+    @blend_enable.setter
+    def blend_enable(self, value: bool):
+        state = self._native.get_render_state()
+        state.blend_enable = value
+        self._native.set_render_state(state)
+        from InfEngine.lib import RenderStateOverride
+        self._native.mark_override(RenderStateOverride.BLEND_ENABLE)
+
+    @property
+    def surface_type(self) -> str:
+        """'opaque' or 'transparent' (derived from blend_enable)."""
+        return "transparent" if self.blend_enable else "opaque"
+
+    @surface_type.setter
+    def surface_type(self, value: str):
+        from InfEngine.lib import RenderStateOverride
+        state = self._native.get_render_state()
+        if value == "transparent":
+            state.blend_enable = True
+            state.src_color_blend_factor = 6   # SRC_ALPHA
+            state.dst_color_blend_factor = 7   # ONE_MINUS_SRC_ALPHA
+            state.color_blend_op = 0           # ADD
+            state.depth_write_enable = False
+            state.render_queue = 3000
+        else:
+            state.blend_enable = False
+            state.depth_write_enable = True
+            state.render_queue = 2000
+        self._native.set_render_state(state)
+        self._native.mark_override(RenderStateOverride.SURFACE_TYPE)
+        self._native.mark_override(RenderStateOverride.BLEND_ENABLE)
+        self._native.mark_override(RenderStateOverride.DEPTH_WRITE)
+        self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
+
+    @property
+    def alpha_clip_enabled(self) -> bool:
+        """Whether alpha clipping is enabled."""
+        return self._native.get_render_state().alpha_clip_enabled
+
+    @alpha_clip_enabled.setter
+    def alpha_clip_enabled(self, value: bool):
+        from InfEngine.lib import RenderStateOverride
+        state = self._native.get_render_state()
+        state.alpha_clip_enabled = value
+        if value and state.alpha_clip_threshold <= 0.0:
+            state.alpha_clip_threshold = 0.5
+        self._native.set_render_state(state)
+        self._native.sync_alpha_clip_property()
+        self._native.mark_override(RenderStateOverride.ALPHA_CLIP)
+
+    @property
+    def alpha_clip_threshold(self) -> float:
+        """Alpha clip threshold (0.0–1.0)."""
+        return self._native.get_render_state().alpha_clip_threshold
+
+    @alpha_clip_threshold.setter
+    def alpha_clip_threshold(self, value: float):
+        from InfEngine.lib import RenderStateOverride
+        state = self._native.get_render_state()
+        state.alpha_clip_threshold = max(0.0, min(1.0, value))
+        state.alpha_clip_enabled = True
+        self._native.set_render_state(state)
+        self._native.sync_alpha_clip_property()
+        self._native.mark_override(RenderStateOverride.ALPHA_CLIP)
+
+    # ==========================================================================
+    # Auto-save (Unity-like dirty-flag persistence)
+    # ==========================================================================
+
+    def _auto_save(self):
+        """Auto-save material to its .mat file after property changes.
+
+        Mirrors Unity: every material property change persists to disk,
+        both in edit mode and at runtime.  Saves are throttled so that
+        rapid-fire changes (e.g. every-frame set_texture) don't hammer
+        the file system — pending writes are flushed via flush().
+        """
+        if Material._suppress_auto_save:
+            return
+
+        file_path = getattr(self._native, "file_path", None)
+        if not file_path:
+            return
+
+        now = time.monotonic()
+        if now - self._last_save_time < self._AUTOSAVE_MIN_INTERVAL:
+            self._save_pending = True
+            Material._pending_saves.add(self)
+            return
+
+        self._flush_save()
+
+    def _flush_save(self):
+        """Execute the actual disk write."""
+        file_path = getattr(self._native, "file_path", None)
+        if not file_path:
+            return
+        try:
+            ok = self._native.save()
+            self._last_save_time = time.monotonic()
+            self._save_pending = False
+            Material._pending_saves.discard(self)
+            if not ok:
+                from InfEngine.debug import Debug
+                Debug.log_warning(
+                    f"Material._auto_save: save() returned False for '{self.name}' "
+                    f"(path={file_path})"
+                )
+        except Exception as e:
+            from InfEngine.debug import Debug
+            Debug.log_warning(f"Material._auto_save: exception for '{self.name}': {e}")
+
+    def flush(self):
+        """Force-write any pending changes to disk."""
+        if self._save_pending:
+            self._flush_save()
+
+    @staticmethod
+    def flush_all_pending():
+        """Flush all materials that have throttled pending saves.
+
+        Called by the engine at end-of-frame to ensure changes persist
+        without blocking every property setter with synchronous I/O.
+        """
+        for mat in list(Material._pending_saves):
+            mat._flush_save()
+
+    # ==========================================================================
+    # Shader Property Setters (Unity-compatible naming)
+    # ==========================================================================
+
+    def set_float(self, name: str, value: float):
+        """Set a float shader property."""
+        self._native.set_float(name, value)
+        self._auto_save()
+
+    def set_int(self, name: str, value: int):
+        """Set an integer shader property."""
+        self._native.set_int(name, value)
+        self._auto_save()
+
+    def set_color(self, name: str, r: float, g: float, b: float, a: float = 1.0):
+        """Set a color shader property (RGBA)."""
+        self._native.set_color(name, (r, g, b, a))
+        self._auto_save()
+
+    def set_vector2(self, name: str, x: float, y: float):
+        """Set a vec2 shader property."""
+        self._native.set_vector2(name, (x, y))
+        self._auto_save()
+
+    def set_vector3(self, name: str, x: float, y: float, z: float):
+        """Set a vec3 shader property."""
+        self._native.set_vector3(name, (x, y, z))
+        self._auto_save()
+
+    def set_vector4(self, name: str, x: float, y: float, z: float, w: float):
+        """Set a vec4 shader property."""
+        self._native.set_vector4(name, (x, y, z, w))
+        self._auto_save()
+
+    def set_texture_guid(self, name: str, texture_guid: str):
+        """Set a texture shader property by asset GUID."""
+        self._native.set_texture_guid(name, texture_guid)
+        self._auto_save()
+
+    def set_param(self, name: str, value):
+        """Set a non-texture material property using type/shape dispatch.
+
+        Examples:
+            material.set_param("metallic", 0.9)
+            material.set_param("baseColor", (1.0, 0.5, 0.2, 1.0))
+            material.set_param("tiling", (2.0, 2.0))
+        """
+        self._native.set_param(name, value)
+        self._auto_save()
+
+    def set_texture(self, name: str, value):
+        """Set a texture property from GUID, path, Texture, or None.
+
+        Supported values:
+            - ``None``: clears the texture
+            - texture GUID string
+            - texture asset path string
+            - object with ``guid`` or ``source_path``
+            - wrapper exposing ``native`` with those fields
+        """
+        self._native.set_texture(name, value)
+        self._auto_save()
+
+    def clear_texture(self, name: str):
+        """Clear a texture shader property (remove texture reference)."""
+        self._native.clear_texture(name)
+        self._auto_save()
+
+    # ==========================================================================
+    # Shader Property Getters
+    # ==========================================================================
+
+    def get_float(self, name: str, default: float = 0.0) -> float:
+        """Get a float shader property."""
+        val = self._native.get_property(name)
+        return float(val) if val is not None else default
+
+    def get_int(self, name: str, default: int = 0) -> int:
+        """Get an integer shader property."""
+        val = self._native.get_property(name)
+        return int(val) if val is not None else default
+
+    def get_color(self, name: str) -> Tuple[float, float, float, float]:
+        """Get a color shader property as (r, g, b, a)."""
+        val = self._native.get_property(name)
+        if val is None:
+            return (0.0, 0.0, 0.0, 1.0)
+        try:
+            return (float(val[0]), float(val[1]), float(val[2]), float(val[3]))
+        except (TypeError, IndexError):
+            return (0.0, 0.0, 0.0, 1.0)
+
+    def get_vector2(self, name: str) -> Tuple[float, float]:
+        """Get a vec2 shader property."""
+        val = self._native.get_property(name)
+        if val is None:
+            return (0.0, 0.0)
+        try:
+            return (float(val[0]), float(val[1]))
+        except (TypeError, IndexError):
+            return (0.0, 0.0)
+
+    def get_vector3(self, name: str) -> Tuple[float, float, float]:
+        """Get a vec3 shader property."""
+        val = self._native.get_property(name)
+        if val is None:
+            return (0.0, 0.0, 0.0)
+        try:
+            return (float(val[0]), float(val[1]), float(val[2]))
+        except (TypeError, IndexError):
+            return (0.0, 0.0, 0.0)
+
+    def get_vector4(self, name: str) -> Tuple[float, float, float, float]:
+        """Get a vec4 shader property."""
+        val = self._native.get_property(name)
+        if val is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        try:
+            return (float(val[0]), float(val[1]), float(val[2]), float(val[3]))
+        except (TypeError, IndexError):
+            return (0.0, 0.0, 0.0, 0.0)
+
+    def get_texture(self, name: str) -> Optional[str]:
+        """Get a texture shader property GUID (or None if not set)."""
+        val = self._native.get_property(name)
+        return str(val) if val is not None else None
+
+    def has_property(self, name: str) -> bool:
+        """Check if the material has a property with the given name."""
+        return self._native.has_property(name)
+
+    def get_property(self, name: str):
+        """Get a property value by name (generic). Returns None if not found."""
+        return self._native.get_property(name)
+
+    def get_all_properties(self) -> dict:
+        """Get all properties as a dictionary."""
+        return self._native.get_all_properties()
+
+    # ==========================================================================
+    # Serialization
+    # ==========================================================================
+
+    def to_dict(self) -> dict:
+        """Serialize material to a dictionary."""
+        return {
+            "name": self.name,
+            "guid": self.guid,
+            "render_queue": self.render_queue,
+            "shader_name": self.shader_name,
+        }
+
+    def save(self, file_path: str) -> bool:
+        """Save material to a .mat file."""
+        return self._native.serialize_to_file(file_path)
+
+    # ==========================================================================
+    # Dunder methods
+    # ==========================================================================
+
+    def __repr__(self):
+        return f"Material(name='{self.name}', queue={self.render_queue})"
+
+    def __eq__(self, other):
+        if isinstance(other, Material):
+            return self.guid == other.guid
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.guid)

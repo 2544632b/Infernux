@@ -1,0 +1,413 @@
+/**
+ * @file MeshLoader.cpp
+ * @brief Assimp-based mesh loading for InfEngine's AssetRegistry.
+ *
+ * Converts Assimp's aiScene into the engine's InfMesh representation.
+ * All aiMesh nodes are collected via a recursive scene-graph traversal
+ * and merged into a single vertex/index buffer with per-submesh offsets.
+ */
+
+#include "MeshLoader.h"
+#include "InfMesh.h"
+
+#include <core/log/InfLog.h>
+#include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/InfResource/InfResourceMeta.h>
+
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+
+#include <filesystem>
+#include <fstream>
+#include <platform/filesystem/InfPath.h>
+#include <unordered_map>
+
+namespace infengine
+{
+
+// ============================================================================
+// Import-setting helpers
+// ============================================================================
+
+struct MeshImportSettings
+{
+    float scaleFactor = 0.01f;
+    bool generateNormals = true;
+    bool generateTangents = true;
+    bool flipUVs = false;
+    bool optimizeMesh = true;
+};
+
+static MeshImportSettings ReadImportSettings(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
+{
+    MeshImportSettings settings;
+    if (!adb)
+        return settings;
+
+    // Prefer GUID-based lookup (O(1), no path-normalization issues)
+    const InfResourceMeta *meta = nullptr;
+    if (!guid.empty())
+        meta = adb->GetMetaByGuid(guid);
+    if (!meta)
+        meta = adb->GetMetaByPath(filePath);
+    if (!meta)
+        return settings;
+
+    if (meta->HasKey("scale_factor"))
+        settings.scaleFactor = meta->GetDataAs<float>("scale_factor");
+    if (meta->HasKey("generate_normals"))
+        settings.generateNormals = meta->GetDataAs<bool>("generate_normals");
+    if (meta->HasKey("generate_tangents"))
+        settings.generateTangents = meta->GetDataAs<bool>("generate_tangents");
+    if (meta->HasKey("flip_uvs"))
+        settings.flipUVs = meta->GetDataAs<bool>("flip_uvs");
+    if (meta->HasKey("optimize_mesh"))
+        settings.optimizeMesh = meta->GetDataAs<bool>("optimize_mesh");
+
+    return settings;
+}
+
+static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
+{
+    unsigned int flags = aiProcess_Triangulate;
+
+    if (settings.generateNormals)
+        flags |= aiProcess_GenSmoothNormals;
+    if (settings.generateTangents)
+        flags |= aiProcess_CalcTangentSpace;
+    if (settings.flipUVs)
+        flags |= aiProcess_FlipUVs;
+    // NOTE: aiProcess_OptimizeMeshes and aiProcess_OptimizeGraph are intentionally
+    // omitted — they merge meshes across different Assimp nodes, destroying the
+    // per-object hierarchy needed for correct scene object splitting.
+    (void)settings.optimizeMesh;
+
+    // Always apply these for correctness:
+    flags |= aiProcess_JoinIdenticalVertices; // Weld duplicate vertices
+    flags |= aiProcess_SortByPType;           // Separate points/lines from triangles
+    flags |= aiProcess_ValidateDataStructure; // Sanity check
+    flags |= aiProcess_ImproveCacheLocality;  // GPU vertex-cache friendly ordering
+
+    return flags;
+}
+
+// ============================================================================
+// Scene traversal — collect all meshes from the node hierarchy
+// ============================================================================
+
+/**
+ * @brief Recursively traverse the Assimp node tree and collect mesh indices
+ *        along with their accumulated world transform.
+ *
+ * Each node in an Assimp scene has a local transform and references zero or
+ * more meshes by index.  We walk the tree depth-first, accumulating the
+ * transform chain, so that every mesh's geometry is placed correctly in
+ * model space.
+ */
+struct CollectedMesh
+{
+    uint32_t meshIndex;       ///< Index into aiScene::mMeshes
+    glm::mat4 worldTransform; ///< Accumulated node transform
+    uint32_t nodeGroup;       ///< Source node group (for per-object splitting)
+};
+
+static glm::mat4 AiToGlm(const aiMatrix4x4 &m)
+{
+    // Assimp stores column-major internally, but the aiMatrix4x4 API
+    // exposes row-major accessors.  GLM is column-major.
+    return glm::mat4(m.a1, m.b1, m.c1, m.d1, // col 0
+                     m.a2, m.b2, m.c2, m.d2, // col 1
+                     m.a3, m.b3, m.c3, m.d3, // col 2
+                     m.a4, m.b4, m.c4, m.d4  // col 3
+    );
+}
+
+static void CollectMeshes(const aiNode *node, const glm::mat4 &parentTransform, std::vector<CollectedMesh> &outMeshes,
+                          std::vector<std::string> &outNodeNames)
+{
+    glm::mat4 nodeTransform = parentTransform * AiToGlm(node->mTransformation);
+
+    if (node->mNumMeshes > 0) {
+        uint32_t group = static_cast<uint32_t>(outNodeNames.size());
+        outNodeNames.push_back(node->mName.C_Str());
+        for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+            outMeshes.push_back({node->mMeshes[i], nodeTransform, group});
+        }
+    }
+
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        CollectMeshes(node->mChildren[i], nodeTransform, outMeshes, outNodeNames);
+    }
+}
+
+// ============================================================================
+// Core conversion: aiScene → InfMesh
+// ============================================================================
+
+static std::shared_ptr<InfMesh> ConvertScene(const aiScene *scene, const MeshImportSettings &settings,
+                                             const std::string &name)
+{
+    auto mesh = std::make_shared<InfMesh>(name);
+
+    // Collect all mesh instances with their transforms and node grouping
+    std::vector<CollectedMesh> collectedMeshes;
+    std::vector<std::string> nodeNames;
+    collectedMeshes.reserve(scene->mNumMeshes);
+    CollectMeshes(scene->mRootNode, glm::mat4(1.0f), collectedMeshes, nodeNames);
+
+    if (collectedMeshes.empty()) {
+        INFLOG_WARN("MeshLoader: scene '", name, "' contains no meshes");
+        return mesh;
+    }
+
+    // Pre-calculate total counts for a single allocation
+    uint32_t totalVertices = 0;
+    uint32_t totalIndices = 0;
+    for (const auto &cm : collectedMeshes) {
+        const aiMesh *aiM = scene->mMeshes[cm.meshIndex];
+        totalVertices += aiM->mNumVertices;
+        for (unsigned int f = 0; f < aiM->mNumFaces; ++f)
+            totalIndices += aiM->mFaces[f].mNumIndices;
+    }
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<SubMesh> subMeshes;
+    vertices.reserve(totalVertices);
+    indices.reserve(totalIndices);
+    subMeshes.reserve(collectedMeshes.size());
+
+    // Deduplicate material slot assignments:
+    // Assimp's material indices are per-aiScene.  Multiple aiMeshes can
+    // share the same material index → same slot.
+    std::unordered_map<unsigned int, uint32_t> aiMatToSlot;
+    std::vector<std::string> materialSlotNames;
+
+    uint32_t currentVertexOffset = 0;
+    uint32_t currentIndexOffset = 0;
+
+    const float scale = settings.scaleFactor;
+    const bool applyScale = std::abs(scale - 1.0f) > 1e-6f;
+
+    for (const auto &cm : collectedMeshes) {
+        const aiMesh *aiM = scene->mMeshes[cm.meshIndex];
+
+        // Skip non-triangle primitives (points, lines)
+        if (!(aiM->mPrimitiveTypes & aiPrimitiveType_TRIANGLE))
+            continue;
+
+        const bool hasNormals = aiM->HasNormals();
+        const bool hasTangents = aiM->HasTangentsAndBitangents();
+        const bool hasUVs = aiM->HasTextureCoords(0);
+        const bool hasColors = aiM->HasVertexColors(0);
+
+        // Compute normal matrix from the world transform (no scale skew for normals)
+        const glm::mat4 &xform = cm.worldTransform;
+        const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(xform)));
+
+        // ── Vertices ────────────────────────────────────────────────
+        for (unsigned int v = 0; v < aiM->mNumVertices; ++v) {
+            Vertex vert{};
+
+            // Position: apply node transform, then uniform scale
+            glm::vec3 pos(aiM->mVertices[v].x, aiM->mVertices[v].y, aiM->mVertices[v].z);
+            glm::vec4 worldPos = xform * glm::vec4(pos, 1.0f);
+            vert.pos = glm::vec3(worldPos);
+            if (applyScale)
+                vert.pos *= scale;
+
+            // Normal
+            if (hasNormals) {
+                glm::vec3 n(aiM->mNormals[v].x, aiM->mNormals[v].y, aiM->mNormals[v].z);
+                vert.normal = glm::normalize(normalMatrix * n);
+            }
+
+            // Tangent + bitangent handedness
+            if (hasTangents) {
+                glm::vec3 t(aiM->mTangents[v].x, aiM->mTangents[v].y, aiM->mTangents[v].z);
+                glm::vec3 worldT = glm::normalize(glm::mat3(xform) * t);
+
+                glm::vec3 b(aiM->mBitangents[v].x, aiM->mBitangents[v].y, aiM->mBitangents[v].z);
+                glm::vec3 worldB = glm::normalize(glm::mat3(xform) * b);
+
+                // Compute handedness: sign of dot(cross(N,T), B)
+                float handedness = (glm::dot(glm::cross(vert.normal, worldT), worldB) < 0.0f) ? -1.0f : 1.0f;
+                vert.tangent = glm::vec4(worldT, handedness);
+            } else {
+                vert.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
+
+            // UV (channel 0 only for now)
+            if (hasUVs) {
+                vert.texCoord = glm::vec2(aiM->mTextureCoords[0][v].x, aiM->mTextureCoords[0][v].y);
+            }
+
+            // Vertex colour
+            if (hasColors) {
+                vert.color = glm::vec3(aiM->mColors[0][v].r, aiM->mColors[0][v].g, aiM->mColors[0][v].b);
+            } else {
+                vert.color = glm::vec3(1.0f);
+            }
+
+            vertices.push_back(vert);
+        }
+
+        // ── Indices ─────────────────────────────────────────────────
+        uint32_t submeshIndexStart = currentIndexOffset;
+        for (unsigned int f = 0; f < aiM->mNumFaces; ++f) {
+            const aiFace &face = aiM->mFaces[f];
+            for (unsigned int idx = 0; idx < face.mNumIndices; ++idx) {
+                indices.push_back(face.mIndices[idx] + currentVertexOffset);
+            }
+            currentIndexOffset += face.mNumIndices;
+        }
+
+        // ── Material slot mapping ───────────────────────────────────
+        uint32_t slot = 0;
+        auto it = aiMatToSlot.find(aiM->mMaterialIndex);
+        if (it != aiMatToSlot.end()) {
+            slot = it->second;
+        } else {
+            slot = static_cast<uint32_t>(materialSlotNames.size());
+            aiMatToSlot[aiM->mMaterialIndex] = slot;
+
+            // Extract material name from Assimp
+            std::string matName;
+            if (aiM->mMaterialIndex < scene->mNumMaterials) {
+                aiString aiName;
+                scene->mMaterials[aiM->mMaterialIndex]->Get(AI_MATKEY_NAME, aiName);
+                matName = aiName.C_Str();
+            }
+            if (matName.empty())
+                matName = "Material_" + std::to_string(slot);
+            materialSlotNames.push_back(matName);
+        }
+
+        // ── SubMesh ─────────────────────────────────────────────────
+        SubMesh sub;
+        sub.indexStart = submeshIndexStart;
+        sub.indexCount = currentIndexOffset - submeshIndexStart;
+        sub.vertexStart = currentVertexOffset;
+        sub.vertexCount = aiM->mNumVertices;
+        sub.materialSlot = slot;
+        sub.nodeGroup = cm.nodeGroup;
+        sub.name = aiM->mName.C_Str();
+
+        // Compute per-submesh AABB from the vertices we just added
+        if (sub.vertexCount > 0) {
+            constexpr float INF = std::numeric_limits<float>::max();
+            sub.boundsMin = glm::vec3(INF);
+            sub.boundsMax = glm::vec3(-INF);
+            for (uint32_t vi = sub.vertexStart; vi < sub.vertexStart + sub.vertexCount; ++vi) {
+                sub.boundsMin = glm::min(sub.boundsMin, vertices[vi].pos);
+                sub.boundsMax = glm::max(sub.boundsMax, vertices[vi].pos);
+            }
+        }
+
+        subMeshes.push_back(std::move(sub));
+        currentVertexOffset += aiM->mNumVertices;
+    }
+
+    mesh->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
+    mesh->SetMaterialSlotNames(std::move(materialSlotNames));
+    mesh->SetNodeNames(std::move(nodeNames));
+
+    return mesh;
+}
+
+// ============================================================================
+// IAssetLoader interface
+// ============================================================================
+
+std::shared_ptr<void> MeshLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
+{
+    INFLOG_INFO("MeshLoader::Load: '", filePath, "' [", guid, "]");
+
+    auto fsPath = ToFsPath(filePath);
+    if (!std::filesystem::exists(fsPath)) {
+        INFLOG_ERROR("MeshLoader::Load: file not found: ", filePath);
+        return nullptr;
+    }
+
+    // Read file into memory to avoid Assimp's narrow-string path issues on Windows
+    std::ifstream file(fsPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        INFLOG_ERROR("MeshLoader::Load: cannot open file: ", filePath);
+        return nullptr;
+    }
+    auto fileSize = file.tellg();
+    if (fileSize <= 0) {
+        INFLOG_ERROR("MeshLoader::Load: empty or unreadable: ", filePath);
+        return nullptr;
+    }
+    std::vector<char> fileData(static_cast<size_t>(fileSize));
+    file.seekg(0);
+    file.read(fileData.data(), fileSize);
+    file.close();
+
+    MeshImportSettings settings = ReadImportSettings(filePath, guid, adb);
+    unsigned int flags = BuildAssimpFlags(settings);
+
+    // Derive extension hint for Assimp (e.g. "fbx")
+    std::string ext = fsPath.extension().string();
+    if (!ext.empty() && ext[0] == '.')
+        ext = ext.substr(1);
+
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFileFromMemory(fileData.data(), fileData.size(), flags, ext.c_str());
+
+    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
+        INFLOG_ERROR("MeshLoader::Load: Assimp failed for '", filePath, "': ", importer.GetErrorString());
+        return nullptr;
+    }
+
+    std::string name = FromFsPath(fsPath.stem());
+    auto mesh = ConvertScene(scene, settings, name);
+    if (!mesh)
+        return nullptr;
+
+    mesh->SetGuid(guid);
+    mesh->SetFilePath(filePath);
+
+    INFLOG_INFO("MeshLoader::Load: '", name, "' — ", mesh->GetVertexCount(), " verts, ", mesh->GetIndexCount(),
+                " indices, ", mesh->GetSubMeshCount(), " submesh(es), ", mesh->GetMaterialSlotCount(),
+                " material slot(s)");
+
+    return mesh;
+}
+
+bool MeshLoader::Reload(std::shared_ptr<void> existing, const std::string &filePath, const std::string &guid,
+                        AssetDatabase *adb)
+{
+    INFLOG_INFO("MeshLoader::Reload: '", filePath, "'");
+
+    auto freshData = Load(filePath, guid, adb);
+    if (!freshData)
+        return false;
+
+    auto loaded = std::static_pointer_cast<InfMesh>(freshData);
+
+    // Replace contents of the existing instance in-place to preserve pointer identity.
+    auto target = std::static_pointer_cast<InfMesh>(existing);
+    if (!target)
+        return false;
+
+    target->SetName(loaded->GetName());
+    target->SetFilePath(loaded->GetFilePath());
+    target->SetData(std::vector<Vertex>(loaded->GetVertices()), std::vector<uint32_t>(loaded->GetIndices()),
+                    std::vector<SubMesh>(loaded->GetSubMeshes()));
+    target->SetMaterialSlotNames(std::vector<std::string>(loaded->GetMaterialSlotNames()));
+
+    INFLOG_INFO("MeshLoader::Reload: updated '", target->GetName(), "' in-place");
+    return true;
+}
+
+std::set<std::string> MeshLoader::ScanDependencies(const std::string & /*filePath*/, AssetDatabase * /*adb*/)
+{
+    // Mesh assets don't reference other assets directly.
+    // Material bindings are on MeshRenderer, not on the mesh itself.
+    return {};
+}
+
+} // namespace infengine

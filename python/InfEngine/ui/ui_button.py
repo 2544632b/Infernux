@@ -1,0 +1,153 @@
+"""UIButton — a clickable button UI element.
+
+Hierarchy:
+    InfComponent → InfUIComponent → InfUIScreenComponent → UISelectable → UIButton
+
+Usage in a user script::
+
+    class MyUI(InfComponent):
+        def start(self):
+            btn = self.game_object.find("StartBtn").get_component(UIButton)
+            btn.on_click.add_listener(self.on_start)
+
+        def on_start(self):
+            print("Start clicked!")
+"""
+
+from __future__ import annotations
+
+from InfEngine.components import serialized_field, list_field, add_component_menu
+from InfEngine.components.serialized_field import FieldType
+from .enums import TextAlignH, TextAlignV
+from .ui_selectable import UISelectable
+from .ui_event import UIEvent
+from .ui_event_entry import UIEventEntry, materialize_event_arguments
+
+
+@add_component_menu("UI/Button")
+class UIButton(UISelectable):
+    """A clickable button with visual state feedback.
+
+    Combines **Image** (background) and **Text** (label) capabilities:
+
+    * Background can be a solid ``background_color`` or a ``texture_path`` image.
+    * Label text supports full typography: alignment, line-height, letter-spacing.
+    * Fires ``on_click`` when the user performs a full click (down + up).
+    """
+
+    # ── Content ──
+    label: str = serialized_field(
+        default="Button", tooltip="Button label text",
+        group="Content",
+    )
+    font_size: float = serialized_field(
+        default=20.0, tooltip="Label font size",
+        group="Content", range=(4.0, 256.0), drag_speed=0.5,
+    )
+    font_path: str = serialized_field(
+        default="", tooltip="Optional font asset path",
+        group="Content",
+    )
+    label_color: list = serialized_field(
+        default=[1.0, 1.0, 1.0, 1.0], field_type=FieldType.COLOR,
+        tooltip="Label text colour", group="Content",
+    )
+    text_align_h: TextAlignH = serialized_field(
+        default=TextAlignH.Center,
+        tooltip="Horizontal text alignment",
+        group="Content",
+    )
+    text_align_v: TextAlignV = serialized_field(
+        default=TextAlignV.Center,
+        tooltip="Vertical text alignment",
+        group="Content",
+    )
+    line_height: float = serialized_field(
+        default=1.2, tooltip="Line height multiplier",
+        group="Content", range=(0.5, 5.0), drag_speed=0.01,
+    )
+    letter_spacing: float = serialized_field(
+        default=0.0, tooltip="Extra letter spacing in pixels",
+        group="Content", range=(-20.0, 100.0), drag_speed=0.1,
+    )
+
+    # ── Fill ──
+    texture_path: str = serialized_field(
+        default="", tooltip="Background image texture path",
+        group="Fill",
+    )
+    background_color: list = serialized_field(
+        default=[0.22, 0.56, 0.92, 1.0], field_type=FieldType.COLOR,
+        tooltip="Background fill colour (RGBA)", group="Fill",
+    )
+
+    # ── Events ──
+    on_click_entries: list = list_field(
+        element_type=FieldType.SERIALIZABLE_OBJECT,
+        element_class=UIEventEntry,
+        tooltip="Persistent click handlers (GO → component → method)",
+        group="Events",
+    )
+
+    def awake(self):
+        super().awake()
+        self._init_button_state()
+
+    def _init_button_state(self):
+        if not hasattr(self, "_on_click"):
+            self._on_click: UIEvent = UIEvent()
+
+    @property
+    def on_click(self) -> UIEvent:
+        self._init_button_state()
+        return self._on_click
+
+    # ------------------------------------------------------------------
+    # Pointer hooks
+    # ------------------------------------------------------------------
+
+    def on_pointer_click(self, event_data):
+        if not self.interactable:
+            return
+        self._init_button_state()
+        self._on_click.invoke()
+        self._dispatch_persistent_entries()
+
+    # ------------------------------------------------------------------
+    # Persistent event dispatch
+    # ------------------------------------------------------------------
+
+    def _dispatch_persistent_entries(self):
+        """Resolve and invoke each on_click_entries binding."""
+        entries = self.on_click_entries
+        if not entries:
+            return
+        for entry in entries:
+            target_ref = getattr(entry, "target", None)
+            if target_ref is None:
+                continue
+            go = target_ref.resolve() if hasattr(target_ref, "resolve") else None
+            if go is None:
+                continue
+            comp_name = getattr(entry, "component_name", "") or ""
+            method_name = getattr(entry, "method_name", "") or ""
+            if not comp_name or not method_name:
+                continue
+            comp = self._resolve_component(go, comp_name)
+            if comp is None:
+                continue
+            fn = getattr(comp, method_name, None)
+            if callable(fn):
+                try:
+                    fn(*materialize_event_arguments(entry, comp))
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+
+    @staticmethod
+    def _resolve_component(go, comp_name: str):
+        """Find a Python component by class name on *go*."""
+        for py_comp in go.get_py_components():
+            if type(py_comp).__name__ == comp_name:
+                return py_comp
+        return None
