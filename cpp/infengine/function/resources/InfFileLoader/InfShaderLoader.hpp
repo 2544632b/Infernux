@@ -2,7 +2,6 @@
 
 #include <SPIRV/GlslangToSpv.h>
 #include <core/types/ShaderTypes.h>
-#include <function/resources/IMetaCreator.h>
 #include <function/resources/InfResource/InfResourceMeta.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
@@ -124,7 +123,12 @@ struct ShaderDescriptor
 // InfShaderLoader
 // ============================================================================
 
-class InfShaderLoader : public IMetaCreator
+/// @brief Shader compiler and meta creator utility.
+///
+/// Runtime asset loading is handled by ShaderLoader (IAssetLoader).
+/// This class provides the GLSL compilation engine and meta creation
+/// logic that ShaderLoader delegates to.
+class InfShaderLoader
 {
   public:
     InfShaderLoader(bool generateDebugInfo, bool stripDebugInfo, bool disableOptimizer, bool optimizeSize,
@@ -135,9 +139,9 @@ class InfShaderLoader : public IMetaCreator
     /// Register an additional directory to scan for @import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
-    bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData) override;
+    bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData);
     void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InfResourceMeta &metaData) override;
+                    InfResourceMeta &metaData);
 
     /// Compile shader source to SPIR-V and populate variant caches.
     /// Returns compiled data as shared_ptr<vector<char>> (forward SPIR-V), or nullptr on failure.

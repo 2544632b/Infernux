@@ -104,6 +104,82 @@ class _DownloadWorker(QObject):
             self.error.emit(str(exc))
 
 
+class _RuntimeInstallWorker(QObject):
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, runtime_manager):
+        super().__init__()
+        self._runtime_manager = runtime_manager
+
+    def run(self):
+        try:
+            python_exe = self._runtime_manager.ensure_runtime()
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(python_exe)
+
+
+class PythonRuntimeInstallDialog(QDialog):
+    def __init__(self, runtime_manager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Installing Python 3.12")
+        self.setModal(True)
+        self.setFixedSize(420, 140)
+        self.result_path = ""
+        self.error_text = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("Installing Python 3.12 for InfEngine Hub")
+        title.setObjectName("cardName")
+        layout.addWidget(title)
+
+        detail = QLabel(
+            "A background installer process is preparing Python 3.12 and a reusable "
+            "venv template in InfEngineHubData. New projects can then clone that template directly. "
+            "This window will close automatically when installation finishes."
+        )
+        detail.setWordWrap(True)
+        detail.setObjectName("cardPath")
+        layout.addWidget(detail)
+
+        progress = QProgressBar(self)
+        progress.setRange(0, 0)
+        progress.setTextVisible(False)
+        progress.setFixedHeight(6)
+        layout.addWidget(progress)
+
+        self._thread = QThread(self)
+        self._worker = _RuntimeInstallWorker(runtime_manager)
+        self._worker.moveToThread(self._thread)
+
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.error.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.start()
+
+    def _on_finished(self, python_exe: str):
+        self.result_path = python_exe
+        self.accept()
+
+    def _on_error(self, message: str):
+        self.error_text = message
+        self.reject()
+
+    def reject(self):
+        if self._thread.isRunning() and not self.error_text:
+            return
+        super().reject()
+
+
 class _VersionRow(QFrame):
     """A selectable row inside the Install Editor dialog."""
 
@@ -387,13 +463,16 @@ class InstallsView(QWidget):
         self._runtime_card.show()
         runtime_path = self._runtime_manager.get_runtime_path()
         if runtime_path:
-            self._runtime_status.setText("Python 3.12 runtime is ready")
+            if self._runtime_manager.has_venv_template():
+                self._runtime_status.setText("Python 3.12 runtime and venv template are ready")
+            else:
+                self._runtime_status.setText("Python 3.12 runtime is ready; venv template will be prepared on first use")
             self._runtime_path.setText(runtime_path)
             self._runtime_button.setText("Reinstall Python 3.12")
         else:
             self._runtime_status.setText("Python 3.12 runtime is missing")
             self._runtime_path.setText(
-                "The Hub has a bundled python-3.12.0-amd64.exe installer and will install Python 3.12 into _inner/python312."
+                "The installed Hub is expected to prepare Python 3.12 during setup. If it is still missing, Hub will download the matching Python 3.12 installer for this machine and prepare a reusable venv template."
             )
             self._runtime_button.setText("Install Python 3.12")
 
@@ -408,20 +487,16 @@ class InstallsView(QWidget):
         if self._runtime_manager is None:
             return
 
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            python_exe = self._runtime_manager.ensure_runtime()
-        except Exception as exc:
-            QMessageBox.critical(self, "Python Installation Failed", str(exc))
-        else:
+        dlg = PythonRuntimeInstallDialog(self._runtime_manager, self)
+        if dlg.exec() == QDialog.Accepted:
             QMessageBox.information(
                 self,
                 "Python Installed",
-                f"Python 3.12 is ready at:\n{python_exe}",
+                f"Python 3.12 is ready at:\n{dlg.result_path}",
             )
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.refresh()
+        elif dlg.error_text:
+            QMessageBox.critical(self, "Python Installation Failed", dlg.error_text)
+        self.refresh()
 
     def _on_locate(self):
         path, _ = QFileDialog.getOpenFileName(

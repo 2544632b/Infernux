@@ -79,6 +79,9 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             py::arg("guid"), "Get a cached material by GUID (returns None if not loaded)")
         .def("get_builtin_material", &AssetRegistry::GetBuiltinMaterial, py::arg("key"),
              "Get a built-in material by key (e.g. 'DefaultLit', 'ErrorMaterial')")
+        .def("load_builtin_material_from_file", &AssetRegistry::LoadBuiltinMaterialFromFile, py::arg("key"),
+             py::arg("mat_file_path"),
+             "Load/replace a builtin material from a .mat file (e.g. key='DefaultLit')")
 
         // Mesh convenience wrappers (Phase 0+1)
         .def(

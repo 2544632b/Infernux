@@ -101,6 +101,12 @@ The engine is structured around a practical division of labor.
 | Visual Studio | 2022 (MSVC v143) |
 | pybind11 | 2.11+ |
 
+Notes:
+
+- `python packaging/launcher.py` is the development path. It uses your current Python environment.
+- The packaged Hub is a separate distribution path. It manages a private Python 3.12 runtime for end users.
+- The current release targets Windows. Official prebuilt wheels are currently `win_amd64`.
+
 ### Clone
 
 ```bash
@@ -132,12 +138,121 @@ The build produces the native Python module, copies required runtime dependencie
 python packaging/launcher.py
 ```
 
+This launches the Hub in development mode. In this mode:
+
+- no installer is required
+- no private Hub runtime is installed
+- project `.venv` environments are created from the current Python interpreter
+- project creation still requires a prebuilt InfEngine wheel in `dist/`
+
 ### Test
 
 ```bash
 cd python
 python -m pytest test/ -v
 ```
+
+---
+
+## Hub Packaging
+
+There are now two distinct ways to distribute the Hub.
+
+### 1. Standalone Hub bundle
+
+```bash
+cmake --build --preset packaging
+```
+
+This produces the PyInstaller output directory under `dist/InfEngine Hub/`.
+
+Use this when you want:
+
+- a developer-facing portable bundle
+- a quick local smoke test of the packaged Hub
+- a fallback path when you do not have an installer toolchain installed
+
+Behavior of the standalone bundle:
+
+- the Hub can still bootstrap Python 3.12 for itself if needed
+- runtime preparation happens on first launch in the background
+- this path is intended as a fallback, not the primary end-user distribution format
+
+### 2. Windows installer
+
+```bash
+cmake --build --preset packaging-installer
+```
+
+This produces a graphical Windows installer executable for InfEngine Hub.
+
+This target now builds a custom graphical installer executable that users can double-click directly.
+
+Use this when you want the Hub to behave like a real installed application:
+
+- copy files into a proper install directory
+- download the correct Python 3.12 installer for the current machine architecture during setup
+- install the Hub's private Python runtime into `InfEngineHubData/python312`
+- prepare a reusable venv template during installation instead of waiting for first project creation
+
+### Installer dependency
+
+The installer target now uses the existing Python packaging toolchain in this repository.
+
+- no external Windows installer authoring tool is required
+- normal source development still does not need the installer target
+- `packaging-installer` depends on the already-packaged Hub payload from `packaging`
+
+### Installer behavior
+
+The installer itself is now a graphical application and performs these steps directly:
+
+- detects the host architecture
+- downloads the matching Python 3.12 installer
+- installs Python into the Hub's private data directory
+- prepares a reusable venv template for later project creation
+
+### Installer note
+
+The InfEngine Hub installer pipeline is an area I am not deeply familiar with yet, so the current installer-related workflow was produced with AI assistance.
+
+The current installer stack includes:
+
+- PyInstaller for the standalone Hub bundle
+- PyInstaller for the graphical installer executable
+- a bundled installer UI written with PySide6
+- the official Python 3.12 Windows installers downloaded per machine architecture
+
+If you spot problems, packaging edge cases, or better Windows installer practices, please open an issue.
+
+### Current architecture note
+
+The Python runtime installer can be selected per machine architecture, but the engine distribution path is still constrained by the wheels you publish.
+
+Today, the project ships Windows wheels for the current supported architecture. If you want full non-`amd64` support, you must also publish matching InfEngine wheels for those architectures.
+
+---
+
+## Hub Runtime Model
+
+The Hub now distinguishes clearly between development and end-user environments.
+
+### Development mode
+
+- launched with `python packaging/launcher.py`
+- uses the current Python environment
+- does not install a private Hub runtime
+- uses local build outputs and local wheels
+
+### Installed Hub mode
+
+- launched from the packaged application
+- uses a private Python 3.12 runtime under `InfEngineHubData/`
+- prepares a reusable venv template once
+- copies that template for new projects to reduce project creation time
+- installs the selected InfEngine version into each project after the template is copied
+
+This means the shared template contains Python only. It does not preinstall a specific InfEngine wheel, because users choose the engine version per project.
 
 ---
 
@@ -180,6 +295,7 @@ This is the main architectural promise of the engine: **high-level iteration wit
 - UI pipeline
 - Animation systems
 - Standalone build / export
+- Hub installer and distribution flow hardening
 - Fuller documentation, examples, and production path
 
 ---

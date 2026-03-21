@@ -1,7 +1,6 @@
 #pragma once
 
 #include <core/log/InfLog.h>
-#include <function/resources/IMetaCreator.h>
 #include <function/resources/InfResource/InfResourceMeta.h>
 
 #include <filesystem>
@@ -10,16 +9,13 @@ namespace infengine
 {
 
 /**
- * @brief File loader for audio resources (.wav).
- *
- * Handles metadata creation and loading for audio files.
- * Actual PCM decoding is done by AudioClip.
- * This loader manages the asset pipeline metadata side.
+ * @brief Legacy audio meta creator — now superseded by AudioClipLoader (IAssetLoader).
+ * Retained temporarily for source compatibility; not instantiated by AssetDatabase.
  */
-class InfAudioLoader : public IMetaCreator
+class InfAudioLoader
 {
   public:
-    bool LoadMeta(const char * /*content*/, const std::string &filePath, InfResourceMeta &metaData) override
+    bool LoadMeta(const char * /*content*/, const std::string &filePath, InfResourceMeta &metaData)
     {
         std::string metaFilePath = InfResourceMeta::GetMetaFilePath(filePath);
         if (metaData.LoadFromFile(metaFilePath)) {
@@ -29,7 +25,7 @@ class InfAudioLoader : public IMetaCreator
     }
 
     void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InfResourceMeta &metaData) override
+                    InfResourceMeta &metaData)
     {
         metaData.Init(content, contentSize, filePath, ResourceType::Audio);
 

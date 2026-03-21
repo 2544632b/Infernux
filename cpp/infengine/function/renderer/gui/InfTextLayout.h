@@ -4,9 +4,11 @@
 #include <imgui_internal.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cfloat>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -46,14 +48,32 @@ struct TextLayoutResult
 // Font cache and missing-font set.  Accessed only from the main/render thread
 // (ImGui is single-threaded by design).  Wrapped in accessors to avoid static
 // initialization order issues across translation units.
+//
+// Debug-mode assertion records the first caller's thread ID and asserts on
+// subsequent calls from a different thread, catching accidental cross-thread use.
+
+namespace detail
+{
+inline void AssertMainThread()
+{
+#ifndef NDEBUG
+    static const std::thread::id s_ownerThread = std::this_thread::get_id();
+    assert(std::this_thread::get_id() == s_ownerThread &&
+           "InfTextLayout font cache accessed from non-owner thread");
+#endif
+}
+} // namespace detail
+
 inline std::unordered_map<std::string, ImFont *> &GetFontCache()
 {
+    detail::AssertMainThread();
     static std::unordered_map<std::string, ImFont *> cache;
     return cache;
 }
 
 inline std::unordered_set<std::string> &GetMissingFonts()
 {
+    detail::AssertMainThread();
     static std::unordered_set<std::string> missing;
     return missing;
 }

@@ -129,10 +129,9 @@ class Engine():
                     continue
                 mat_path = os.path.join(mat_dir, fname)
 
-                # Load the default material via MaterialManager (updates builtin cache)
+                # Load the default material via AssetRegistry (replaces builtin DefaultLit)
                 if fname == "default_lit.mat" and not default_loaded:
-                    from InfEngine.lib import MaterialManager
-                    if MaterialManager.instance().load_default_material_from_file(mat_path):
+                    if registry.load_builtin_material_from_file("DefaultLit", mat_path):
                         Debug.log_internal(f"Loaded default material from: {mat_path}")
                         default_loaded = True
                     else:

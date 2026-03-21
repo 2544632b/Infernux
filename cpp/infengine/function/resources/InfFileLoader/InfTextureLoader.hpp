@@ -1,6 +1,5 @@
 #pragma once
 
-#include <function/resources/IMetaCreator.h>
 #include <function/resources/InfResource/InfResourceMeta.h>
 
 #include <string>
@@ -32,27 +31,14 @@ struct InfTextureData
     }
 };
 
-/// @brief Loader for image/texture files using stb_image
+/// @brief Utility class for image/texture loading via stb_image.
 /// Supports: PNG, JPG, BMP, TGA, GIF, PSD, HDR, PIC
-class InfTextureLoader : public IMetaCreator
+///
+/// Meta creation and loading is now handled by TextureLoader (IAssetLoader).
+/// This class only provides static pixel-loading utilities.
+class InfTextureLoader
 {
   public:
-    InfTextureLoader();
-
-    /// @brief Load metadata from existing .meta file
-    /// @param content The raw file content
-    /// @param filePath Path to the texture file
-    /// @param metaData Output metadata object
-    /// @return true if metadata was loaded successfully
-    bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData) override;
-
-    /// @brief Create new metadata for a texture file
-    /// @param content The raw file content (binary image data)
-    /// @param filePath Path to the texture file
-    /// @param metaData Output metadata object to populate
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InfResourceMeta &metaData) override;
-
     /// @brief Load texture directly from file path (convenience method)
     /// @param filePath Path to the texture file
     /// @param name Texture identifier name
@@ -86,12 +72,6 @@ class InfTextureLoader : public IMetaCreator
     /// @return InfTextureData containing the generated checkerboard texture
     static InfTextureData CreateCheckerboard(int width, int height, int checkerSize = 8,
                                              const std::string &name = "checkerboard");
-
-  private:
-    /// @brief Get texture format type based on file extension
-    /// @param extension File extension (e.g., ".png", ".jpg")
-    /// @return String describing the texture format
-    std::string GetTextureFormatFromExtension(const std::string &extension) const;
 };
 
 } // namespace infengine

@@ -27,6 +27,11 @@ def get_inner_dir() -> str:
     """Return the Hub private data directory.
 
     In packaged builds this resolves next to the Hub executable. In source mode
-    it resolves under packaging/_inner so dev runs behave the same way.
+    it resolves under packaging/InfEngineHubData so dev runs behave the same way.
     """
-    return os.path.join(get_app_dir(), "_inner")
+    return get_hub_data_dir()
+
+
+def get_hub_data_dir() -> str:
+    """Return the Hub application data directory next to the executable."""
+    return os.path.join(get_app_dir(), "InfEngineHubData")

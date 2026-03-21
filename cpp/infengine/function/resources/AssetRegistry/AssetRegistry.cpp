@@ -8,6 +8,7 @@
 #include <platform/filesystem/InfPath.h>
 
 #include <filesystem>
+#include <fstream>
 #include <unordered_set>
 
 namespace infengine
@@ -67,6 +68,18 @@ IAssetLoader *AssetRegistry::GetLoader(ResourceType type) const
 {
     auto it = m_loaders.find(type);
     return it != m_loaders.end() ? it->second.get() : nullptr;
+}
+
+void AssetRegistry::PopulateAssetDatabaseLoaders()
+{
+    if (!m_assetDb) {
+        INFLOG_WARN("AssetRegistry::PopulateAssetDatabaseLoaders: no AssetDatabase");
+        return;
+    }
+    for (auto &[type, loader] : m_loaders) {
+        m_assetDb->SetMetaLoader(type, loader.get());
+    }
+    INFLOG_INFO("AssetRegistry: populated AssetDatabase with ", m_loaders.size(), " loaders");
 }
 
 // =============================================================================
@@ -226,6 +239,32 @@ std::shared_ptr<InfMaterial> AssetRegistry::GetBuiltinMaterial(const std::string
 {
     auto it = m_builtinMaterials.find(key);
     return it != m_builtinMaterials.end() ? it->second : nullptr;
+}
+
+bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const std::string &matFilePath)
+{
+    if (matFilePath.empty())
+        return false;
+
+    std::ifstream file(ToFsPath(matFilePath));
+    if (!file.is_open()) {
+        INFLOG_WARN("AssetRegistry::LoadBuiltinMaterialFromFile: cannot open '", matFilePath, "'");
+        return false;
+    }
+    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    auto material = std::make_shared<InfMaterial>();
+    if (!material->Deserialize(jsonStr)) {
+        INFLOG_ERROR("AssetRegistry::LoadBuiltinMaterialFromFile: deserialization failed for '", matFilePath, "'");
+        return false;
+    }
+
+    material->SetFilePath(matFilePath);
+    RegisterBuiltinMaterial(key, material);
+
+    INFLOG_INFO("AssetRegistry: loaded builtin material '", key, "' from: ", matFilePath);
+    return true;
 }
 
 // =============================================================================

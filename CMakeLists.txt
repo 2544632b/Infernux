@@ -90,10 +90,11 @@ endif()
 # GLM: Use left-handed coordinate system (Unity convention: X+=right, Y+=up, Z+=forward)
 target_compile_definitions(_InfEngine PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_LEFT_HANDED)
 
-# Enable frame profiling instrumentation in Debug (RelWithDebInfo) builds
+# Enable frame profiling instrumentation in Debug (RelWithDebInfo) builds.
+# Terminal output (stderr) is OFF by default — enable with -DINFENGINE_FRAME_PROFILE_TERMINAL=1
+# at CMake configure time if you need per-window dumps in the console.
 target_compile_definitions(_InfEngine PRIVATE
     $<$<CONFIG:RelWithDebInfo>:INFENGINE_FRAME_PROFILE=1>
-    $<$<CONFIG:RelWithDebInfo>:INFENGINE_FRAME_PROFILE_TERMINAL=1>
 )
 
 target_link_libraries(_InfEngine PRIVATE
@@ -164,6 +165,21 @@ add_custom_target(infengine_hub
         --noconfirm
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
     COMMENT "Build InfEngine Hub standalone application → dist/InfEngine Hub/"
+)
+
+add_custom_target(infengine_hub_installer
+    COMMAND ${CMAKE_COMMAND} -E echo "Building graphical InfEngine Hub installer..."
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${CMAKE_SOURCE_DIR}/dist/installer"
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${CMAKE_SOURCE_DIR}/dist/installer_helper"
+    COMMAND ${Python3_EXECUTABLE} -m PyInstaller
+        "${CMAKE_SOURCE_DIR}/packaging/infengine_hub_installer.spec"
+        --distpath "${CMAKE_SOURCE_DIR}/dist/installer"
+        --workpath "${CMAKE_BINARY_DIR}/installer_build"
+        --clean
+        --noconfirm
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
+    DEPENDS infengine_hub
+    COMMENT "Build graphical InfEngine Hub installer → dist/installer/"
 )
 
 # ------------------------------------------------------------------------------

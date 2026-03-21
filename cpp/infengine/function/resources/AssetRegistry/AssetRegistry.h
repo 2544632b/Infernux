@@ -76,6 +76,10 @@ class AssetRegistry
 
     [[nodiscard]] IAssetLoader *GetLoader(ResourceType type) const;
 
+    /// @brief Populate AssetDatabase's meta-loader table from the registered loaders.
+    /// Must be called after all RegisterLoader() calls and before AssetDatabase::Refresh().
+    void PopulateAssetDatabaseLoaders();
+
     // ── Load / Get API (GUID-first) ──────────────────────────────────────────
 
     /// Return a cached instance if already loaded, or nullptr.
@@ -112,6 +116,10 @@ class AssetRegistry
 
     void RegisterBuiltinMaterial(const std::string &key, std::shared_ptr<InfMaterial> mat);
     [[nodiscard]] std::shared_ptr<InfMaterial> GetBuiltinMaterial(const std::string &key) const;
+
+    /// @brief Load a builtin material from a .mat file, replacing the existing
+    /// entry for the given key.  Used at startup to override DefaultLit etc.
+    bool LoadBuiltinMaterialFromFile(const std::string &key, const std::string &matFilePath);
 
     // ── Queries ──────────────────────────────────────────────────────────────
 

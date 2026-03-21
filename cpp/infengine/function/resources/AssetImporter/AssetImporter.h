@@ -34,7 +34,7 @@ struct ImportContext
  * calls Import() / Reimport() during the asset pipeline.
  *
  * Importers are thin wrappers that delegate heavy work to
- * the existing IMetaCreator subclasses.
+ * the registered IAssetLoader implementations.
  */
 class AssetImporter
 {

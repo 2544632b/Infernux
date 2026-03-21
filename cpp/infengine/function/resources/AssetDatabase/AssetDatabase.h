@@ -3,7 +3,7 @@
 #include <core/types/InfFwdType.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ImporterRegistry.h>
-#include <function/resources/IMetaCreator.h>
+#include <function/resources/AssetRegistry/IAssetLoader.h>
 #include <function/resources/InfResource/InfResourceMeta.h>
 
 #include <filesystem>
@@ -173,9 +173,19 @@ class AssetDatabase
     ImporterRegistry m_importerRegistry;
 
     // Resource loaders (one per ResourceType, used for meta creation/loading)
-    std::unordered_map<ResourceType, std::unique_ptr<IMetaCreator>> m_loaders;
+    // Non-owning pointers — ownership is in AssetRegistry::m_loaders.
+    std::unordered_map<ResourceType, IAssetLoader *> m_loaders;
     // GUID -> metadata cache
     std::unordered_map<std::string, std::unique_ptr<InfResourceMeta>> m_metas;
+
+  public:
+    /// @brief Set a meta-creation loader for a resource type.
+    /// Called by AssetRegistry after all loaders are registered.
+    void SetMetaLoader(ResourceType type, IAssetLoader *loader)
+    {
+        if (loader)
+            m_loaders[type] = loader;
+    }
 };
 
 } // namespace infengine

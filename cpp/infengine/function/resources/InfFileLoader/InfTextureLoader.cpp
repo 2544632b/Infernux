@@ -10,63 +10,6 @@
 namespace infengine
 {
 
-InfTextureLoader::InfTextureLoader()
-{
-    INFLOG_DEBUG("InfTextureLoader initialized");
-}
-
-bool InfTextureLoader::LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData)
-{
-    std::string metaPath = InfResourceMeta::GetMetaFilePath(filePath);
-    if (std::filesystem::exists(ToFsPath(metaPath))) {
-        return metaData.LoadFromFile(metaPath);
-    }
-    return false;
-}
-
-void InfTextureLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                                  InfResourceMeta &metaData)
-{
-    INFLOG_DEBUG("Creating metadata for texture: ", filePath);
-    metaData.Init(content, contentSize, filePath, ResourceType::Texture);
-
-    std::filesystem::path path = ToFsPath(filePath);
-    std::string extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-
-    // Get image dimensions without fully loading it.
-    // Read file bytes first so Unicode / mixed-separator Windows paths work reliably.
-    int width = 0, height = 0, channels = 0;
-    std::vector<unsigned char> fileBytes;
-    if (ReadFileBytes(filePath, fileBytes) && !fileBytes.empty() &&
-        stbi_info_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()), &width, &height, &channels)) {
-        metaData.AddMetadata("width", width);
-        metaData.AddMetadata("height", height);
-        metaData.AddMetadata("channels", channels);
-    } else {
-        INFLOG_WARN("Could not read image info for: ", filePath);
-    }
-
-    // Add common metadata
-    metaData.AddMetadata("file_type", std::string("texture"));
-    metaData.AddMetadata("file_extension", extension);
-    metaData.AddMetadata("texture_format", GetTextureFormatFromExtension(extension));
-    metaData.AddMetadata("is_binary", true);
-
-    // File size
-    try {
-        if (std::filesystem::exists(path)) {
-            auto fileSize = std::filesystem::file_size(path);
-            metaData.AddMetadata("file_size", static_cast<size_t>(fileSize));
-        }
-    } catch (const std::filesystem::filesystem_error &e) {
-        INFLOG_ERROR("Failed to get file size for ", filePath, " : ", e.what());
-    }
-
-    INFLOG_DEBUG("Texture metadata created: ", FromFsPath(path.filename()), " [", width, "x", height, "x", channels,
-                 "]");
-}
-
 InfTextureData InfTextureLoader::LoadFromFile(const std::string &filePath, const std::string &name)
 {
     InfTextureData result;
@@ -177,23 +120,6 @@ InfTextureData InfTextureLoader::CreateCheckerboard(int width, int height, int c
 
     INFLOG_DEBUG("Created checkerboard texture: ", name, " [", width, "x", height, "] checker size: ", checkerSize);
     return result;
-}
-
-std::string InfTextureLoader::GetTextureFormatFromExtension(const std::string &extension) const
-{
-    static const std::unordered_map<std::string, std::string> formatMap = {
-        {".png", "PNG"}, {".jpg", "JPEG"}, {".jpeg", "JPEG"}, {".bmp", "BMP"}, {".tga", "TGA"}, {".gif", "GIF"},
-        {".psd", "PSD"}, {".hdr", "HDR"},  {".pic", "PIC"},   {".pnm", "PNM"}, {".pgm", "PGM"}, {".ppm", "PPM"},
-    };
-
-    std::string ext = extension;
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-    auto it = formatMap.find(ext);
-    if (it != formatMap.end()) {
-        return it->second;
-    }
-    return "Unknown";
 }
 
 } // namespace infengine

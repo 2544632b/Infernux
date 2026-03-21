@@ -1,9 +1,9 @@
-#include <function/resources/IMetaCreator.h>
+#include <function/resources/AssetRegistry/IAssetLoader.h>
 #include <function/resources/InfResource/InfResourceMeta.h>
 
 namespace infengine
 {
-class InfDefaultTextLoader : public IMetaCreator
+class InfDefaultTextLoader : public IAssetLoader
 {
   public:
     InfDefaultTextLoader();
@@ -11,9 +11,24 @@ class InfDefaultTextLoader : public IMetaCreator
     bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData) override;
     void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                     InfResourceMeta &metaData) override;
+
+    std::shared_ptr<void> Load(const std::string & /*filePath*/, const std::string & /*guid*/,
+                               AssetDatabase * /*adb*/) override
+    {
+        return nullptr;
+    }
+    bool Reload(std::shared_ptr<void> /*existing*/, const std::string & /*filePath*/, const std::string & /*guid*/,
+                AssetDatabase * /*adb*/) override
+    {
+        return false;
+    }
+    std::set<std::string> ScanDependencies(const std::string & /*filePath*/, AssetDatabase * /*adb*/) override
+    {
+        return {};
+    }
 };
 
-class InfDefaultBinaryLoader : public IMetaCreator
+class InfDefaultBinaryLoader : public IAssetLoader
 {
   public:
     InfDefaultBinaryLoader();
@@ -21,6 +36,21 @@ class InfDefaultBinaryLoader : public IMetaCreator
     bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData) override;
     void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                     InfResourceMeta &metaData) override;
+
+    std::shared_ptr<void> Load(const std::string & /*filePath*/, const std::string & /*guid*/,
+                               AssetDatabase * /*adb*/) override
+    {
+        return nullptr;
+    }
+    bool Reload(std::shared_ptr<void> /*existing*/, const std::string & /*filePath*/, const std::string & /*guid*/,
+                AssetDatabase * /*adb*/) override
+    {
+        return false;
+    }
+    std::set<std::string> ScanDependencies(const std::string & /*filePath*/, AssetDatabase * /*adb*/) override
+    {
+        return {};
+    }
 
   private:
     /// @brief Get binary file type based on file extension

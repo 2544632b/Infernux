@@ -50,15 +50,9 @@ InfVkCoreModular::~InfVkCoreModular()
         m_materialPipelineManagerInitialized = false;
     }
 
-    // Cleanup shaders — use m_pipelineManager.DestroyShaderModule() which
-    // also removes the handle from VkPipelineManager's tracking list,
-    // preventing a double-free when Destroy() is called later.
-    for (auto &[name, shader] : m_vertShaders) {
-        m_pipelineManager.DestroyShaderModule(shader);
-    }
-    for (auto &[name, shader] : m_fragShaders) {
-        m_pipelineManager.DestroyShaderModule(shader);
-    }
+    // Cleanup shaders via VkShaderCache → VkPipelineManager.DestroyShaderModule
+    // which also removes handles from tracking, preventing double-free.
+    m_shaderCache.DestroyModules(m_pipelineManager);
 
     // During shutdown the device is already idle (drained once by ~InfRenderer).
     // Tell RAII members to skip their own vkDeviceWaitIdle calls.
@@ -80,13 +74,8 @@ InfVkCoreModular::~InfVkCoreModular()
     // Explicit destruction in controlled order (avoids double-free from
     // RAII reverse-declaration order when handles are shared across systems).
     m_perObjectBuffers.clear();
-    m_textures.clear();
-    m_shaderProgramCache.Clear();
-
-    m_vertShaderCodes.clear();
-    m_fragShaderCodes.clear();
-    m_vertShaders.clear();
-    m_fragShaders.clear();
+    m_textureCache.Clear();
+    m_shaderCache.Clear();
 
     m_lightingUboBuffers.clear();
     m_lightingUboMapped.clear();
@@ -207,16 +196,12 @@ void InfVkCoreModular::PrepareSurface()
 void InfVkCoreModular::PreparePipeline()
 {
     // Create default white texture
-    CreateDefaultWhiteTexture("white");
+    m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
 
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
-    {
-        auto normalTex = m_resourceManager.CreateSolidColorTexture(1, 1, 128, 128, 255, 255, VK_FORMAT_R8G8B8A8_UNORM);
-        if (normalTex) {
-            m_textures["_default_normal"] = std::move(normalTex);
-            INFLOG_INFO("Created default flat normal texture: _default_normal");
-        }
-    }
+    m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255,
+                                            VK_FORMAT_R8G8B8A8_UNORM, m_resourceManager);
+    INFLOG_INFO("Created default flat normal texture: _default_normal");
 
     // Initialize material system (default material + pipelines)
     InitializeMaterialSystem();
@@ -235,59 +220,31 @@ void InfVkCoreModular::PreparePipeline()
 }
 
 // ============================================================================
-// Texture Management
+// Texture Management (delegates to VkTextureCache)
 // ============================================================================
 
 void InfVkCoreModular::CreateTextureImage(std::string name, std::string path)
 {
-    auto texture = m_resourceManager.LoadTexture(path);
-    if (texture) {
-        m_textures[name] = std::move(texture);
-        INFLOG_INFO("Loaded texture: ", name);
-    }
+    m_textureCache.CreateTextureImage(name, path, m_resourceManager);
 }
 
 void InfVkCoreModular::CreateDefaultWhiteTexture(std::string name)
 {
-    auto texture = m_resourceManager.CreateSolidColorTexture(1, 1, 255, 255, 255, 255);
-    if (texture) {
-        m_textures[name] = std::move(texture);
-        INFLOG_INFO("Created default white texture: ", name);
-    }
+    m_textureCache.CreateDefaultWhiteTexture(name, m_resourceManager);
 }
 
 void InfVkCoreModular::LoadTexture(const std::string &name, const std::string &path)
 {
-    CreateTextureImage(name, path);
+    m_textureCache.CreateTextureImage(name, path, m_resourceManager);
 }
 
 // ============================================================================
-// Shader and Pipeline Management
+// Shader and Pipeline Management (delegates to VkShaderCache)
 // ============================================================================
 
 void InfVkCoreModular::LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type)
 {
-    // Convert char vector to uint32_t vector
-    std::vector<uint32_t> code(spirvCode.size() / sizeof(uint32_t));
-    std::memcpy(code.data(), spirvCode.data(), spirvCode.size());
-
-    VkShaderModule module = m_pipelineManager.CreateShaderModule(code);
-    if (module == VK_NULL_HANDLE) {
-        INFLOG_ERROR("Failed to load shader: ", name);
-        return;
-    }
-
-    std::string typeStr(type);
-    if (typeStr == "vert" || typeStr == "vertex") {
-        m_vertShaders[name] = module;
-        m_vertShaderCodes[name] = spirvCode;
-    } else if (typeStr == "frag" || typeStr == "fragment") {
-        m_fragShaders[name] = module;
-        m_fragShaderCodes[name] = spirvCode;
-    } else {
-        INFLOG_WARN("Unknown shader type: ", type);
-        m_pipelineManager.DestroyShaderModule(module);
-    }
+    m_shaderCache.LoadShader(name, spirvCode, type, m_pipelineManager);
 }
 
 void InfVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
@@ -295,47 +252,17 @@ void InfVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const 
                                              const std::string &blend, int queue, const std::string &passTag,
                                              const std::string &stencil, const std::string &alphaClip)
 {
-    ShaderRenderMeta meta;
-    meta.cullMode = cullMode;
-    meta.depthWrite = depthWrite;
-    meta.depthTest = depthTest;
-    meta.blend = blend;
-    meta.queue = queue;
-    meta.passTag = passTag;
-    meta.stencil = stencil;
-    meta.alphaClip = alphaClip;
-    m_shaderRenderMetas[shaderId] = meta;
+    m_shaderCache.StoreRenderMeta(shaderId, cullMode, depthWrite, depthTest, blend, queue, passTag, stencil, alphaClip);
 }
 
 void InfVkCoreModular::UnloadShader(const char *name)
 {
-    std::string nameStr(name);
-    m_shaderRenderMetas.erase(nameStr);
-
-    auto vertIt = m_vertShaders.find(nameStr);
-    if (vertIt != m_vertShaders.end()) {
-        vkDestroyShaderModule(GetDevice(), vertIt->second, nullptr);
-        m_vertShaders.erase(vertIt);
-    }
-    m_vertShaderCodes.erase(nameStr);
-
-    auto fragIt = m_fragShaders.find(nameStr);
-    if (fragIt != m_fragShaders.end()) {
-        vkDestroyShaderModule(GetDevice(), fragIt->second, nullptr);
-        m_fragShaders.erase(fragIt);
-    }
-    m_fragShaderCodes.erase(nameStr);
+    m_shaderCache.UnloadShader(name, GetDevice());
 }
 
 bool InfVkCoreModular::HasShader(const std::string &name, const std::string &type) const
 {
-    if (type == "vert" || type == "vertex") {
-        return m_vertShaders.find(name) != m_vertShaders.end();
-    }
-    if (type == "frag" || type == "fragment") {
-        return m_fragShaders.find(name) != m_fragShaders.end();
-    }
-    return false;
+    return m_shaderCache.HasShader(name, type);
 }
 
 void InfVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
@@ -346,9 +273,7 @@ void InfVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
     m_deviceContext.WaitIdle();
 
     // Remove shader programs from cache that contain this shader
-    // This handles the case where shaderId is a simple name like "123"
-    // but cache keys are like "shaders/default.vert|shaders/123.frag"
-    m_shaderProgramCache.RemoveProgramsContainingShader(shaderId);
+    m_shaderCache.GetProgramCache().RemoveProgramsContainingShader(shaderId);
 
     // Invalidate all materials using this shader in MaterialPipelineManager
     if (m_materialPipelineManagerInitialized) {
@@ -356,7 +281,7 @@ void InfVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
     }
 
     // Also unload the shader module so it gets recreated
-    UnloadShader(shaderId.c_str());
+    m_shaderCache.UnloadShader(shaderId.c_str(), GetDevice());
 
     INFLOG_INFO("Shader cache invalidated for: ", shaderId);
 }
@@ -383,27 +308,9 @@ void InfVkCoreModular::InvalidateTextureCache(const std::string &textureIdentifi
     // Wait for GPU to finish using the texture
     m_deviceContext.WaitIdle();
 
-    // Evict all cached variants for this GUID/path.
-    // Keys may be like:
-    //   GUID::srgb::raw
-    //   GUID::unorm::normalmap
-    // so we must match by prefix, not by a single trailing suffix.
-    {
-        std::lock_guard<std::mutex> lock(m_texturesMutex);
-        std::vector<std::string> keysToRemove;
-        for (const auto &[key, tex] : m_textures) {
-            if (key == matchKey || key.rfind(matchKey + "::", 0) == 0) {
-                keysToRemove.push_back(key);
-            }
-        }
-        for (const auto &key : keysToRemove) {
-            INFLOG_DEBUG("  evicting cached texture: ", key);
-            m_textures.erase(key);
-        }
-    }
-
-    // Texture→material pipeline invalidation is now handled by
-    // AssetDependencyGraph callbacks (Texture Modified → RemoveRenderData)
+    // Evict all cached variants for this GUID/path
+    size_t evicted = m_textureCache.EvictByPrefix(matchKey);
+    (void)evicted;
 
     INFLOG_INFO("Texture cache invalidated for: ", matchKey);
 }

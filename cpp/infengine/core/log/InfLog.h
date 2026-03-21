@@ -30,12 +30,21 @@ class InfLog
         if (logLevel.load(std::memory_order_relaxed) > level)
             return;
 
+        // Build the ENTIRE formatted message outside the lock so that
+        // string formatting never holds the mutex.  Use '\n' instead of
+        // std::endl to avoid a blocking flush() while the lock is held —
+        // this prevents deadlocks / severe contention when multiple
+        // threads (main loop, Vulkan validation callback, file watcher)
+        // log concurrently.
         std::ostringstream oss;
+        oss << LogLevelToColor(level) << '[' << LogLevelToString(level) << "] "
+            << '(' << file << ':' << line << ") ";
         (oss << ... << args);
+        oss << "\033[0m\n";
+        std::string msg = oss.str();
 
         std::lock_guard<std::mutex> lock(mutex_);
-        std::cout << LogLevelToColor(level) << "[" << LogLevelToString(level) << "] "
-                  << "(" << file << ":" << line << ") " << oss.str() << "\033[0m" << std::endl;
+        std::cout.write(msg.data(), static_cast<std::streamsize>(msg.size()));
     }
 
     void SetLogLevel(int level)

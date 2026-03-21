@@ -101,6 +101,13 @@ class InspectorPanel(EditorPanel):
         from InfEngine.engine.undo import InspectorUndoTracker
         self._undo_tracker = InspectorUndoTracker()
 
+        # Multi-edit component cache (invalidated on selection change)
+        self._multi_cache_ids: tuple = ()
+        self._multi_cache_cpp: set = set()
+        self._multi_cache_py: set = set()
+        self._multi_cache_per_cpp: dict = {}
+        self._multi_cache_per_py: dict = {}
+
         # Register MeshRenderer into the component renderer registry so
         # dispatch is fully unified (uses bound method for panel-level state).
         comp_ui.register_component_renderer("MeshRenderer", self._render_mesh_renderer)
@@ -1484,6 +1491,7 @@ class InspectorPanel(EditorPanel):
                 _record_add_component(obj, type_name, result, is_py=False)
             else:
                 Debug.log_error(f"Failed to add component: {type_name}")
+        self._multi_cache_ids = ()  # invalidate component cache
         from InfEngine.gizmos.collector import notify_scene_changed
         notify_scene_changed()
 
@@ -2254,7 +2262,9 @@ class InspectorPanel(EditorPanel):
     # ------------------------------------------------------------------
     def _render_multi_edit(self, ctx: InfGUIContext, objects: list):
         """Render inspector for multiple selected objects (Unity-style multi-edit)."""
+        import json as _json
         from InfEngine.engine.undo import snapshot_renderstack, restore_renderstack
+        from InfEngine.renderstack.render_stack import RenderStack
 
         # --- Register undo tracking for all selected objects ---
         tracker = self._undo_tracker
@@ -2263,11 +2273,9 @@ class InspectorPanel(EditorPanel):
             _o = obj  # capture
             # Track GameObject name / active
             def _go_snap(_oo=_o):
-                import json as _j
-                return _j.dumps({"name": _oo.name, "active": _oo.active})
+                return _json.dumps({"name": _oo.name, "active": _oo.active})
             def _go_rest(s, _oo=_o):
-                import json as _j
-                d = _j.loads(s)
+                d = _json.loads(s)
                 _oo.name = d["name"]
                 _oo.active = d["active"]
             tracker.track(f"go:{oid}", _go_snap, _go_rest, "Edit Objects (Multi)")
@@ -2311,7 +2319,6 @@ class InspectorPanel(EditorPanel):
                 pcs = []
             for pc in pcs:
                 pc_id = getattr(pc, "component_id", None) or id(pc)
-                from InfEngine.renderstack.render_stack import RenderStack
                 if isinstance(pc, RenderStack):
                     _rs = pc
                     tracker.track(
@@ -2370,47 +2377,60 @@ class InspectorPanel(EditorPanel):
             if render_component_header(ctx, "Transform", icon_id=transform_icon, show_enabled=False, force_open=True)[0]:
                 self._render_multi_transform(ctx, objects)
 
-        # Find common C++ component types across all objects
-        common_cpp_types = None
-        per_obj_comps: dict[str, list] = {}  # type_name → [comp_per_obj]
-        for o in objects:
-            try:
-                comps = list(o.get_components()) if hasattr(o, 'get_components') else []
-            except RuntimeError:
-                comps = []
-            type_set = set()
-            for c in comps:
-                tn = c.type_name
-                if tn == "Transform" or hasattr(c, 'get_py_component'):
-                    continue
-                type_set.add(tn)
-                per_obj_comps.setdefault(tn, []).append(c)
+        # Find common component types — cached across frames, invalidated
+        # when the set of selected object IDs changes.
+        obj_ids = tuple(o.id for o in objects)
+        if obj_ids != self._multi_cache_ids:
+            common_cpp_types = None
+            per_obj_comps: dict[str, list] = {}
+            for o in objects:
+                try:
+                    comps = list(o.get_components()) if hasattr(o, 'get_components') else []
+                except RuntimeError:
+                    comps = []
+                type_set = set()
+                for c in comps:
+                    tn = c.type_name
+                    if tn == "Transform" or hasattr(c, 'get_py_component'):
+                        continue
+                    type_set.add(tn)
+                    per_obj_comps.setdefault(tn, []).append(c)
+                if common_cpp_types is None:
+                    common_cpp_types = type_set
+                else:
+                    common_cpp_types &= type_set
             if common_cpp_types is None:
-                common_cpp_types = type_set
-            else:
-                common_cpp_types &= type_set
-        if common_cpp_types is None:
-            common_cpp_types = set()
+                common_cpp_types = set()
 
-        # Find common Python component types
-        common_py_types = None
-        per_obj_py: dict[str, list] = {}
-        for o in objects:
-            try:
-                pcs = list(o.get_py_components()) if hasattr(o, 'get_py_components') else []
-            except RuntimeError:
-                pcs = []
-            type_set = set()
-            for pc in pcs:
-                tn = pc.type_name
-                type_set.add(tn)
-                per_obj_py.setdefault(tn, []).append(pc)
+            common_py_types = None
+            per_obj_py: dict[str, list] = {}
+            for o in objects:
+                try:
+                    pcs = list(o.get_py_components()) if hasattr(o, 'get_py_components') else []
+                except RuntimeError:
+                    pcs = []
+                type_set = set()
+                for pc in pcs:
+                    tn = pc.type_name
+                    type_set.add(tn)
+                    per_obj_py.setdefault(tn, []).append(pc)
+                if common_py_types is None:
+                    common_py_types = type_set
+                else:
+                    common_py_types &= type_set
             if common_py_types is None:
-                common_py_types = type_set
-            else:
-                common_py_types &= type_set
-        if common_py_types is None:
-            common_py_types = set()
+                common_py_types = set()
+
+            self._multi_cache_ids = obj_ids
+            self._multi_cache_cpp = common_cpp_types
+            self._multi_cache_py = common_py_types
+            self._multi_cache_per_cpp = per_obj_comps
+            self._multi_cache_per_py = per_obj_py
+        else:
+            common_cpp_types = self._multi_cache_cpp
+            common_py_types = self._multi_cache_py
+            per_obj_comps = self._multi_cache_per_cpp
+            per_obj_py = self._multi_cache_per_py
 
         # Render common C++ components — force open in multi-select,
         # with special handling for MeshRenderer (show "-" for different values).

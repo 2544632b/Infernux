@@ -410,4 +410,28 @@ std::set<std::string> MeshLoader::ScanDependencies(const std::string & /*filePat
     return {};
 }
 
+// =============================================================================
+// CreateMeta — mesh/binary asset .meta creation
+// =============================================================================
+
+void MeshLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
+                            InfResourceMeta &metaData)
+{
+    metaData.Init(content, contentSize, filePath, ResourceType::Mesh);
+
+    std::filesystem::path path = ToFsPath(filePath);
+    std::string extension = path.extension().string();
+
+    metaData.AddMetadata("file_type", std::string("mesh"));
+    metaData.AddMetadata("file_extension", extension);
+    metaData.AddMetadata("is_readable", false);
+
+    try {
+        if (std::filesystem::exists(path)) {
+            metaData.AddMetadata("file_size", static_cast<size_t>(std::filesystem::file_size(path)));
+        }
+    } catch (const std::filesystem::filesystem_error &) {
+    }
+}
+
 } // namespace infengine

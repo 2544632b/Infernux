@@ -32,6 +32,9 @@ class MeshLoader final : public IAssetLoader
                 AssetDatabase *adb) override;
 
     std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) override;
+
+    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
+                    InfResourceMeta &metaData) override;
 };
 
 } // namespace infengine

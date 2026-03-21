@@ -2,12 +2,6 @@
 
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
-#include <function/resources/InfFileLoader/InfAudioLoader.hpp>
-#include <function/resources/InfFileLoader/InfDefaultLoader.hpp>
-#include <function/resources/InfFileLoader/InfMaterialLoader.hpp>
-#include <function/resources/InfFileLoader/InfPythonScriptLoader.hpp>
-#include <function/resources/InfFileLoader/InfShaderLoader.hpp>
-#include <function/resources/InfFileLoader/InfTextureLoader.hpp>
 
 #include <core/log/InfLog.h>
 #include <platform/filesystem/InfPath.h>
@@ -20,17 +14,9 @@ namespace infengine
 
 AssetDatabase::AssetDatabase()
 {
-    // Initialize resource loaders for meta creation/loading
-    m_loaders[ResourceType::Shader] =
-        std::make_unique<InfShaderLoader>(true, false, false, false, false, false, false, false, false, false);
-    m_loaders[ResourceType::Texture] = std::make_unique<InfTextureLoader>();
-    m_loaders[ResourceType::Script] = std::make_unique<InfPythonScriptLoader>();
-    m_loaders[ResourceType::Material] = std::make_unique<InfMaterialLoader>();
-    m_loaders[ResourceType::Audio] = std::make_unique<InfAudioLoader>();
-    m_loaders[ResourceType::DefaultText] = std::make_unique<InfDefaultTextLoader>();
-    m_loaders[ResourceType::DefaultBinary] = std::make_unique<InfDefaultBinaryLoader>();
-    m_loaders[ResourceType::Mesh] = std::make_unique<InfDefaultBinaryLoader>();
-    INFLOG_DEBUG("AssetDatabase initialized with resource loaders");
+    // Loaders are populated later by AssetRegistry::PopulateAssetDatabaseLoaders()
+    // after all IAssetLoader plug-ins have been registered.
+    INFLOG_DEBUG("AssetDatabase created (loaders pending)");
 }
 
 void AssetDatabase::Initialize(const std::string &projectRoot)

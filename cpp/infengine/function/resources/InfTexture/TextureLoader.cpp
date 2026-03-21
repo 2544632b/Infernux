@@ -13,6 +13,19 @@ namespace infengine
 {
 
 // =============================================================================
+// LoadMeta — try to load existing .meta from disk
+// =============================================================================
+
+bool TextureLoader::LoadMeta(const char * /*content*/, const std::string &filePath, InfResourceMeta &metaData)
+{
+    std::string metaPath = InfResourceMeta::GetMetaFilePath(filePath);
+    if (std::filesystem::exists(ToFsPath(metaPath))) {
+        return metaData.LoadFromFile(metaPath);
+    }
+    return false;
+}
+
+// =============================================================================
 // CreateMeta — texture-specific .meta creation (dimensions, format)
 // =============================================================================
 

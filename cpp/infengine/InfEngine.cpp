@@ -22,6 +22,8 @@
 #include <function/renderer/gui/InfScreenUIRenderer.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InfFileLoader/InfDefaultLoader.hpp>
+#include <function/resources/InfFileLoader/InfPythonScriptLoader.hpp>
 #include <function/resources/InfFileLoader/InfShaderLoader.hpp>
 #include <function/resources/InfMaterial/MaterialLoader.h>
 #include <function/resources/InfMesh/MeshLoader.h>
@@ -213,6 +215,12 @@ void InfEngine::InitRenderer(int width, int height, const std::string &projectPa
         registry.RegisterLoader(ResourceType::Mesh, std::make_unique<MeshLoader>());
         registry.RegisterLoader(ResourceType::Audio, std::make_unique<AudioClipLoader>());
         registry.RegisterLoader(ResourceType::Shader, std::make_unique<ShaderLoader>());
+        registry.RegisterLoader(ResourceType::Script, std::make_unique<InfPythonScriptLoader>());
+        registry.RegisterLoader(ResourceType::DefaultText, std::make_unique<InfDefaultTextLoader>());
+        registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InfDefaultBinaryLoader>());
+
+        // Populate AssetDatabase's meta-loader table from registered loaders
+        registry.PopulateAssetDatabaseLoaders();
 
         registry.GetAssetDatabase()->Refresh();
 
@@ -431,6 +439,7 @@ void InfEngine::SetSelectionOutline(uint64_t objectId)
         return;
     }
 
+    m_cachedOutlineIds.clear();
     m_selectedObjectId = objectId;
     m_renderer->SetSelectedObjectId(objectId);
 
@@ -477,6 +486,7 @@ void InfEngine::ClearSelectionOutline()
     if (m_isCleanedUp || !m_renderer) {
         return;
     }
+    m_cachedOutlineIds.clear();
     m_selectedObjectId = 0;
     m_renderer->SetSelectedObjectId(0);
     m_renderer->GetEditorGizmos().ClearSelectionOutline();
@@ -487,6 +497,12 @@ void InfEngine::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
     if (m_isCleanedUp || !m_renderer) {
         return;
     }
+
+    // Fast path: skip expensive mesh extraction when the ID set is unchanged.
+    if (objectIds == m_cachedOutlineIds) {
+        return;
+    }
+    m_cachedOutlineIds = objectIds;
 
     auto &gizmos = m_renderer->GetEditorGizmos();
 

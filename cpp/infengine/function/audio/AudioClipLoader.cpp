@@ -77,4 +77,35 @@ std::set<std::string> AudioClipLoader::ScanDependencies(const std::string & /*fi
     return {};
 }
 
+// =============================================================================
+// LoadMeta — try to load existing .meta from disk
+// =============================================================================
+
+bool AudioClipLoader::LoadMeta(const char * /*content*/, const std::string &filePath, InfResourceMeta &metaData)
+{
+    std::string metaFilePath = InfResourceMeta::GetMetaFilePath(filePath);
+    if (metaData.LoadFromFile(metaFilePath)) {
+        return true;
+    }
+    return false;
+}
+
+// =============================================================================
+// CreateMeta — audio-specific .meta creation
+// =============================================================================
+
+void AudioClipLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
+                                 InfResourceMeta &metaData)
+{
+    metaData.Init(content, contentSize, filePath, ResourceType::Audio);
+
+    std::filesystem::path path(filePath);
+    std::string resourceName = path.stem().string();
+
+    metaData.AddMetadata("resource_name", resourceName);
+    metaData.AddMetadata("file_size", static_cast<int>(contentSize));
+    metaData.AddMetadata("file_type", std::string("audio"));
+    metaData.AddMetadata("extension", path.extension().string());
+}
+
 } // namespace infengine

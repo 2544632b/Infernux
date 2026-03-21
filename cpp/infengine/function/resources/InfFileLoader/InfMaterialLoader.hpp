@@ -1,31 +1,20 @@
 #pragma once
 
-#include <function/resources/IMetaCreator.h>
 #include <function/resources/InfResource/InfResourceMeta.h>
 
 namespace infengine
 {
 
 /**
- * @brief Loader for .mat material files
- *
- * Material files are JSON with the following structure:
- * {
- *   "name": "MaterialName",
- *   "shaders": {
- *     "vertex": "path/to/shader.vert",
- *     "fragment": "path/to/shader.frag"
- *   },
- *   "renderState": { ... },
- *   "properties": { ... }
- * }
+ * @brief Legacy material meta creator — now superseded by MaterialLoader (IAssetLoader).
+ * Retained temporarily for source compatibility; not instantiated by AssetDatabase.
  */
-class InfMaterialLoader : public IMetaCreator
+class InfMaterialLoader
 {
   public:
-    bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData) override;
+    bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData);
     void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InfResourceMeta &metaData) override;
+                    InfResourceMeta &metaData);
 };
 
 } // namespace infengine

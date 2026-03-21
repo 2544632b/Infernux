@@ -1,19 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for InfEngine Hub.
-
-Build with:
-    cd packaging
-    pyinstaller infengine_hub.spec --clean
-or via CMake:
-    cmake --build --preset release --target infengine_hub
-"""
 
 import os
-import sys
 
 block_cipher = None
 
 _PACKAGING_DIR = os.path.dirname(os.path.abspath(SPEC))
+_ROOT_DIR = os.path.dirname(_PACKAGING_DIR)
+_PAYLOAD_DIR = os.path.join(_ROOT_DIR, "dist", "InfEngine Hub")
 
 # Locate OpenSSL DLLs required by _ssl.pyd — PyInstaller often misses these in conda envs.
 import sys as _sys
@@ -24,56 +17,40 @@ for _dll_name in ("libssl-3-x64.dll", "libcrypto-3-x64.dll", "libssl-3.dll", "li
     if os.path.isfile(_p):
         _ssl_binaries.append((_p, "."))
 
+if not os.path.isdir(_PAYLOAD_DIR):
+    raise SystemExit(f"Hub payload not found: {_PAYLOAD_DIR}")
+
+
+def collect_tree(src_root: str, dest_root: str):
+    datas = []
+    for root, _dirs, files in os.walk(src_root):
+        rel_dir = os.path.relpath(root, src_root)
+        target_dir = dest_root if rel_dir == "." else os.path.join(dest_root, rel_dir)
+        for filename in files:
+            datas.append((os.path.join(root, filename), target_dir))
+    return datas
+
+
 a = Analysis(
-    [os.path.join(_PACKAGING_DIR, "launcher.py")],
+    [os.path.join(_PACKAGING_DIR, "installer_gui.py")],
     pathex=[_PACKAGING_DIR],
     binaries=[*_ssl_binaries],
     datas=[
         (os.path.join(_PACKAGING_DIR, "resources", "icon.png"), "resources"),
         (os.path.join(_PACKAGING_DIR, "resources", "PingFangTC-Regular.otf"), "resources"),
+        *collect_tree(_PAYLOAD_DIR, "payload"),
     ],
     hiddenimports=[
-        "hub_resources",
-        "hub_utils",
-        "python_runtime",
-        "version_manager",
+        "installer",
+        "installer.install_python_runtime",
         "ssl",
         "_ssl",
         "_hashlib",
-        "database",
-        "splash_screen",
-        "style",
-        "ui_project_list",
-        "model",
-        "model.project_model",
-        "model.new_project_model",
-        "view",
-        "view.control_pane_view",
-        "view.new_project_view",
-        "view.sidebar_view",
-        "view.installs_view",
-        "viewmodel",
-        "viewmodel.control_pane_viewmodel",
-        "viewmodel.new_project_viewmodel",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # Don't bundle the engine itself — it's installed per-project
-        "InfEngine",
-        # Heavy dev packages that aren't needed
-        "numpy",
-        "watchdog",
-        "PIL",
-        "cv2",
-        "matplotlib",
-        "scipy",
-        "pandas",
-        "tkinter",
-        "unittest",
-        "test",
-    ],
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
@@ -83,9 +60,10 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
-    name="InfEngine Hub",
+    name="InfEngineHubInstaller",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -97,14 +75,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=os.path.join(_PACKAGING_DIR, "resources", "icon.png"),
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name="InfEngine Hub",
+    uac_admin=True,
 )

@@ -28,46 +28,6 @@
 namespace infengine
 {
 
-// ============================================================================
-// Shader-code lookup helper (resolves path → SPIR-V code from cache)
-//
-// Handles: exact match, filename-only match, stem-only match (e.g. "123"
-// instead of "123.frag").  Used by both InitializeMaterialSystem and
-// RefreshMaterialPipeline.
-// ============================================================================
-
-static const std::vector<char> *FindShaderCode(const std::unordered_map<std::string, std::vector<char>> &shaderMap,
-                                               const std::string &path)
-{
-    // Try exact match first
-    auto it = shaderMap.find(path);
-    if (it != shaderMap.end()) {
-        return &it->second;
-    }
-
-    // Extract filename from path
-    size_t lastSlash = path.find_last_of("/\\");
-    std::string filename = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
-
-    // Try with filename (with extension)
-    it = shaderMap.find(filename);
-    if (it != shaderMap.end()) {
-        return &it->second;
-    }
-
-    // Try without extension (shader_id style: "123" instead of "123.frag")
-    size_t dotPos = filename.find_last_of('.');
-    if (dotPos != std::string::npos) {
-        std::string nameWithoutExt = filename.substr(0, dotPos);
-        it = shaderMap.find(nameWithoutExt);
-        if (it != shaderMap.end()) {
-            return &it->second;
-        }
-    }
-
-    return nullptr;
-}
-
 static std::string ToLowerCopy(std::string value)
 {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -166,11 +126,11 @@ std::pair<VkImageView, VkSampler> InfVkCoreModular::ResolveTextureForMaterial(co
     std::string cacheKey =
         textureGuid + (isLinearTexture ? "::unorm" : "::srgb") + (normalMapMode ? "::normalmap" : "::raw");
 
+    // Check texture cache (thread-safe)
     {
-        std::lock_guard<std::mutex> lock(m_texturesMutex);
-        auto it = m_textures.find(cacheKey);
-        if (it != m_textures.end() && it->second) {
-            return {it->second->GetView(), it->second->GetSampler()};
+        auto *cached = m_textureCache.Find(cacheKey);
+        if (cached) {
+            return {cached->GetView(), cached->GetSampler()};
         }
     }
 
@@ -183,10 +143,7 @@ std::pair<VkImageView, VkSampler> InfVkCoreModular::ResolveTextureForMaterial(co
 
     VkImageView view = texture->GetView();
     VkSampler sampler = texture->GetSampler();
-    {
-        std::lock_guard<std::mutex> lock(m_texturesMutex);
-        m_textures[cacheKey] = std::move(texture);
-    }
+    m_textureCache.Insert(cacheKey, std::move(texture));
     INFLOG_INFO("TextureResolver: loaded texture '", texturePath, "' (", isLinearTexture ? "UNORM" : "SRGB",
                 ", binding='", bindingName, "', key='", cacheKey, "')");
     return {view, sampler};
@@ -431,20 +388,18 @@ void InfVkCoreModular::InitializeMaterialSystem()
         VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
         VkFormat depthFormat = m_deviceContext.FindDepthFormat();
         m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
-                                             colorFormat, depthFormat, m_msaaSampleCount, m_shaderProgramCache,
+                                             colorFormat, depthFormat, m_msaaSampleCount, m_shaderCache.GetProgramCache(),
                                              &m_deletionQueue);
         m_materialPipelineManagerInitialized = true;
 
-        auto defaultTextureIt = m_textures.find("white");
-        if (defaultTextureIt != m_textures.end()) {
-            m_materialPipelineManager.SetDefaultTexture(defaultTextureIt->second->GetView(),
-                                                        defaultTextureIt->second->GetSampler());
+        auto *whiteTex = m_textureCache.Find("white");
+        if (whiteTex) {
+            m_materialPipelineManager.SetDefaultTexture(whiteTex->GetView(), whiteTex->GetSampler());
         }
 
-        auto defaultNormalIt = m_textures.find("_default_normal");
-        if (defaultNormalIt != m_textures.end()) {
-            m_materialPipelineManager.SetDefaultNormalTexture(defaultNormalIt->second->GetView(),
-                                                              defaultNormalIt->second->GetSampler());
+        auto *normalTex = m_textureCache.Find("_default_normal");
+        if (normalTex) {
+            m_materialPipelineManager.SetDefaultNormalTexture(normalTex->GetView(), normalTex->GetSampler());
         }
 
         // Set up texture resolver for material Texture2D properties
@@ -460,8 +415,8 @@ void InfVkCoreModular::InitializeMaterialSystem()
         const std::string &vertId = defaultMaterial->GetVertShaderName();
         const std::string &fragId = defaultMaterial->GetFragShaderName();
 
-        const auto *vertCode = FindShaderCode(m_vertShaderCodes, vertId);
-        const auto *fragCode = FindShaderCode(m_fragShaderCodes, fragId);
+        const auto *vertCode = m_shaderCache.FindVertCode(vertId);
+        const auto *fragCode = m_shaderCache.FindFragCode(fragId);
 
         if (vertCode && fragCode) {
             VkBuffer lightingBuffer =
@@ -478,15 +433,13 @@ void InfVkCoreModular::InitializeMaterialSystem()
     }
 
     // Pre-build error material pipeline (unlit magenta-black checkerboard).
-    // Uses dedicated error/error shaders — self-contained, no material UBO needed.
-    // If shaders aren't in cache yet, the lazy build in the draw code will handle it.
     auto errorMaterial = AssetRegistry::Instance().GetBuiltinMaterial("ErrorMaterial");
     if (errorMaterial) {
         const std::string &errVertId = errorMaterial->GetVertShaderName();
         const std::string &errFragId = errorMaterial->GetFragShaderName();
 
-        const auto *errVertCode = FindShaderCode(m_vertShaderCodes, errVertId);
-        const auto *errFragCode = FindShaderCode(m_fragShaderCodes, errFragId);
+        const auto *errVertCode = m_shaderCache.FindVertCode(errVertId);
+        const auto *errFragCode = m_shaderCache.FindFragCode(errFragId);
 
         if (errVertCode && errFragCode) {
             VkBuffer lightingBuffer =
@@ -526,20 +479,18 @@ void InfVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSa
     VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkFormat depthFormat = m_deviceContext.FindDepthFormat();
     m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
-                                         colorFormat, depthFormat, newSampleCount, m_shaderProgramCache,
+                                         colorFormat, depthFormat, newSampleCount, m_shaderCache.GetProgramCache(),
                                          &m_deletionQueue);
     m_materialPipelineManagerInitialized = true;
 
     // Restore default textures
-    auto defaultTextureIt = m_textures.find("white");
-    if (defaultTextureIt != m_textures.end()) {
-        m_materialPipelineManager.SetDefaultTexture(defaultTextureIt->second->GetView(),
-                                                    defaultTextureIt->second->GetSampler());
+    auto *whiteTex = m_textureCache.Find("white");
+    if (whiteTex) {
+        m_materialPipelineManager.SetDefaultTexture(whiteTex->GetView(), whiteTex->GetSampler());
     }
-    auto defaultNormalIt = m_textures.find("_default_normal");
-    if (defaultNormalIt != m_textures.end()) {
-        m_materialPipelineManager.SetDefaultNormalTexture(defaultNormalIt->second->GetView(),
-                                                          defaultNormalIt->second->GetSampler());
+    auto *normalTex = m_textureCache.Find("_default_normal");
+    if (normalTex) {
+        m_materialPipelineManager.SetDefaultNormalTexture(normalTex->GetView(), normalTex->GetSampler());
     }
 
     // Restore texture resolver
@@ -560,15 +511,15 @@ bool InfVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InfMaterial> mate
 
     // Apply shader render-state annotations to the material before pipeline creation.
     // Fragment shader annotations take priority (they define the surface behaviour).
-    auto metaIt = m_shaderRenderMetas.find(fragShaderName);
-    if (metaIt != m_shaderRenderMetas.end()) {
-        const auto &meta = metaIt->second;
-        material->ApplyShaderRenderMeta(meta.cullMode, meta.depthWrite, meta.depthTest, meta.blend, meta.queue,
-                                        meta.passTag, meta.stencil, meta.alphaClip);
+    const auto *renderMeta = m_shaderCache.GetRenderMeta(fragShaderName);
+    if (renderMeta) {
+        material->ApplyShaderRenderMeta(renderMeta->cullMode, renderMeta->depthWrite, renderMeta->depthTest,
+                                        renderMeta->blend, renderMeta->queue, renderMeta->passTag,
+                                        renderMeta->stencil, renderMeta->alphaClip);
     }
 
-    const auto *vertCode = FindShaderCode(m_vertShaderCodes, vertShaderName);
-    const auto *fragCode = FindShaderCode(m_fragShaderCodes, fragShaderName);
+    const auto *vertCode = m_shaderCache.FindVertCode(vertShaderName);
+    const auto *fragCode = m_shaderCache.FindFragCode(fragShaderName);
 
     if (vertCode && fragCode && m_materialPipelineManagerInitialized) {
         VkBuffer sceneUbo = m_uniformBuffers.empty() ? VK_NULL_HANDLE : m_uniformBuffers[0]->GetBuffer();
@@ -581,19 +532,10 @@ bool InfVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InfMaterial> mate
 
         bool forwardOk = renderData && renderData->isValid;
 
-        // ---- Per-material shadow pipeline creation ----
-        // Create a per-material shadow pipeline using the material's own vertex
-        // shader + auto-generated shadow fragment variant.  Requires that
-        // EnsureShadowPipeline has created the shared resources (render pass,
-        // pipeline layout, desc sets, etc.).
-        // Only attempt if a shadow fragment variant was actually compiled for this shader
-        // (surface shaders with auto-generated main). Non-surface shaders like
-        // skybox, grid, gizmo have explicit main() and no shadow variant.
         if (forwardOk && m_shadowPipelineReady) {
             std::string shadowFragName = fragShaderName + "/shadow";
             bool hasShadowFrag = (GetShaderModule(shadowFragName, "fragment") != VK_NULL_HANDLE);
             if (hasShadowFrag) {
-                // Destroy the old shadow pipeline if one exists
                 VkPipeline oldShadow = material->GetPassPipeline(ShaderCompileTarget::Shadow);
                 if (oldShadow != VK_NULL_HANDLE) {
                     VkDevice dev = GetDevice();
@@ -615,10 +557,7 @@ bool InfVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InfMaterial> mate
     static int dumpCount = 0;
     if (dumpCount++ < 2) {
         std::string vertKeys, fragKeys;
-        for (const auto &kv : m_vertShaderCodes)
-            vertKeys += " [" + kv.first + "]";
-        for (const auto &kv : m_fragShaderCodes)
-            fragKeys += " [" + kv.first + "]";
+        m_shaderCache.DumpAvailableKeys(vertKeys, fragKeys);
         INFLOG_WARN("  Available vert shaders:", vertKeys);
         INFLOG_WARN("  Available frag shaders:", fragKeys);
         INFLOG_WARN("  MPM initialized: ", m_materialPipelineManagerInitialized ? "true" : "false",
@@ -826,11 +765,7 @@ VkBuffer InfVkCoreModular::GetUniformBuffer(size_t index) const
 
 VkShaderModule InfVkCoreModular::GetShaderModule(const std::string &name, const std::string &type) const
 {
-    const auto &map = (type == "vertex") ? m_vertShaders : m_fragShaders;
-    auto it = map.find(name);
-    if (it != map.end())
-        return it->second;
-    return VK_NULL_HANDLE;
+    return m_shaderCache.GetModule(name, type);
 }
 
 // ============================================================================

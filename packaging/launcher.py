@@ -2,7 +2,7 @@ import sys
 sys.dont_write_bytecode = True
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QMessageBox,
+    QApplication, QMainWindow, QWidget, QMessageBox, QDialog,
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
 )
 from PySide6.QtCore import Qt, QTimer
@@ -13,14 +13,14 @@ from database import ProjectDatabase
 from style import StyleManager
 from hub_resources import ICON_PATH, FONT_PATH
 from hub_utils import is_frozen
-from python_runtime import PythonRuntimeError, PythonRuntimeManager
+from python_runtime import PythonRuntimeManager
 from version_manager import VersionManager
 
 from model.project_model import ProjectModel
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
-from view.installs_view import InstallsView
+from view.installs_view import InstallsView, PythonRuntimeInstallDialog
 
 
 class GameEngineLauncher(QMainWindow):
@@ -123,7 +123,7 @@ class GameEngineLauncher(QMainWindow):
             sys.exit(self.app.exec())
 
     def _bootstrap_python_runtime(self):
-        if self.runtime_manager.has_runtime():
+        if self.runtime_manager.has_runtime() and self.runtime_manager.has_venv_template():
             self.installs_view.refresh()
             return
 
@@ -131,27 +131,74 @@ class GameEngineLauncher(QMainWindow):
             self,
             "Python 3.12 Setup",
             "InfEngine Hub needs Python 3.12 to create and launch projects.\n\n"
-            "The Hub will now use the bundled python-3.12.0-amd64.exe installer\n"
-            "and install Python 3.12 into the Hub's private _inner directory.",
+            "The recommended path is to install InfEngine Hub through the installer, which prepares Python 3.12 during setup.\n"
+            "This standalone build will now download the matching Python 3.12 installer for this machine\n"
+            "and prepare Python 3.12 plus a reusable venv template in InfEngineHubData.",
         )
 
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            self.runtime_manager.ensure_runtime()
-        except PythonRuntimeError as exc:
+        dlg = PythonRuntimeInstallDialog(self.runtime_manager, self)
+        if dlg.exec() != QDialog.Accepted and dlg.error_text:
             QMessageBox.warning(
                 self,
                 "Python 3.12 Not Ready",
-                str(exc),
+                dlg.error_text,
             )
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.installs_view.refresh()
+        self.installs_view.refresh()
 
     def _on_close(self):
         self.db.close()
 
 
+def _handle_uninstall() -> int:
+    """Remove registry entries, Start Menu shortcut, and optionally the install directory."""
+    if sys.platform != "win32":
+        return 1
+    import winreg
+
+    # Read install location from registry before removing the key.
+    install_dir = ""
+    reg_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\InfEngineHub"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_key) as key:
+            install_dir, _ = winreg.QueryValueEx(key, "InstallLocation")
+    except OSError:
+        pass
+
+    # Remove registry entry
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, reg_key)
+    except OSError:
+        pass
+
+    # Remove Start Menu shortcut
+    try:
+        import ctypes.wintypes
+        buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+        ctypes.windll.shell32.SHGetFolderPathW(None, 0x0002, None, 0, buf)
+        if buf.value:
+            import shutil as _shutil
+            _shutil.rmtree(os.path.join(buf.value, "InfEngine Hub"), ignore_errors=True)
+    except Exception:
+        pass
+
+    # Ask user if they want to remove install files
+    app = QApplication.instance() or QApplication(sys.argv)
+    answer = QMessageBox.question(
+        None,
+        "Uninstall InfEngine Hub",
+        "Registry entries and shortcuts have been removed.\n\n"
+        f"Do you also want to delete the installation folder?\n{install_dir}",
+    )
+    if answer == QMessageBox.Yes and install_dir and os.path.isdir(install_dir):
+        import shutil as _shutil
+        _shutil.rmtree(install_dir, ignore_errors=True)
+
+    QMessageBox.information(None, "Uninstall Complete", "InfEngine Hub has been uninstalled.")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--uninstall" in sys.argv:
+        raise SystemExit(_handle_uninstall())
     launcher = GameEngineLauncher()
     launcher.run()

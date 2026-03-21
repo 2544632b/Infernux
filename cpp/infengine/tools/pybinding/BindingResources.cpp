@@ -591,14 +591,12 @@ void RegisterResourceBindings(py::module_ &m)
         .def_readwrite("alpha_clip_enabled", &RenderState::alphaClipEnabled, "Whether alpha clipping is enabled")
         .def_readwrite("alpha_clip_threshold", &RenderState::alphaClipThreshold, "Alpha clip threshold (0.0-1.0)");
 
-    // MaterialManager — thin cache of 8 engine built-in material pointers.
-    // Real ownership is in AssetRegistry.  Only load_default_material_from_file
-    // is exposed for engine bootstrap (replaces the DefaultLit builtin).
-    py::class_<MaterialManager, std::unique_ptr<MaterialManager, py::nodelete>>(m, "MaterialManager")
-        .def_static("instance", &MaterialManager::Instance, py::return_value_policy::reference,
-                    "Get the MaterialManager singleton")
-        .def("load_default_material_from_file", &MaterialManager::LoadDefaultMaterialFromFile, py::arg("mat_file_path"),
-             "Load default material from a .mat file in project directory");
+    // MaterialManager — backward-compatible shim that delegates to AssetRegistry.
+    // Python callers can still use MaterialManager.instance().load_default_material_from_file(...)
+    // via a lightweight Python-side wrapper.
+    //
+    // NOTE: The C++ MaterialManager singleton is deprecated.  New code should use
+    // AssetRegistry.instance().load_builtin_material_from_file() directly.
 }
 
 } // namespace infengine

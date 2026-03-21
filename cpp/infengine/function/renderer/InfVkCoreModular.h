@@ -40,13 +40,14 @@
 #include "InfRenderStruct.h"
 #include "MaterialPipelineManager.h"
 #include "ProfileConfig.h"
+#include "VkShaderCache.h"
+#include "VkTextureCache.h"
 #include "vk/VkCore.h"
 #include <core/types/InfApplication.h>
 #include <function/scene/LightingData.h>
 
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -378,6 +379,14 @@ class InfVkCoreModular
     {
         return m_renderGraph;
     }
+
+    /// @brief Get the shader cache (modules, SPIR-V code, annotations)
+    [[nodiscard]] VkShaderCache &GetShaderCache() { return m_shaderCache; }
+    [[nodiscard]] const VkShaderCache &GetShaderCache() const { return m_shaderCache; }
+
+    /// @brief Get the texture cache
+    [[nodiscard]] VkTextureCache &GetTextureCache() { return m_textureCache; }
+    [[nodiscard]] const VkTextureCache &GetTextureCache() const { return m_textureCache; }
 
     // ========================================================================
     // Direct Vulkan Access (for compatibility)
@@ -746,39 +755,14 @@ class InfVkCoreModular
     // Scene light collector
     SceneLightCollector m_lightCollector;
 
-    // Shaders cache
-    std::unordered_map<std::string, VkShaderModule> m_vertShaders;
-    std::unordered_map<std::string, VkShaderModule> m_fragShaders;
-
-    // Shader code cache for reflection-based pipelines
-    std::unordered_map<std::string, std::vector<char>> m_vertShaderCodes;
-    std::unordered_map<std::string, std::vector<char>> m_fragShaderCodes;
-
-    // Shader render-state annotations parsed from @cull, @depth_write, etc.
-    // Keyed by shader_id (e.g. "lit", "unlit"). Applied to materials before
-    // pipeline creation so shader authors can control GPU state via annotations.
-    struct ShaderRenderMeta
-    {
-        std::string cullMode;   // "back", "front", "none" (empty = default)
-        std::string depthWrite; // "on", "off" (empty = default)
-        std::string depthTest;  // "on", "off", "less", "less_equal", "always", "never" (empty = default)
-        std::string blend;      // "off", "alpha", "additive" (empty = default)
-        int queue = -1;         // -1 = use material default
-        std::string passTag;    // "opaque", "transparent", etc. (empty = matches all)
-        std::string stencil;    // "compare,ref,pass,fail,zfail" (empty = no stencil)
-        std::string alphaClip;  // "off" or threshold string e.g. "0.5" (empty = default)
-    };
-    std::unordered_map<std::string, ShaderRenderMeta> m_shaderRenderMetas;
+    // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
+    VkShaderCache m_shaderCache;
 
     // Reflection-based material pipeline manager
     MaterialPipelineManager m_materialPipelineManager;
 
-    // Shader program cache — owned here, injected into MaterialPipelineManager
-    ShaderProgramCache m_shaderProgramCache;
-
-    // Textures
-    std::unordered_map<std::string, std::unique_ptr<vk::VkTexture>> m_textures;
-    mutable std::mutex m_texturesMutex;
+    // Texture cache (GPU textures keyed by name/GUID, thread-safe)
+    VkTextureCache m_textureCache;
 
     /// @brief Shared texture resolution logic (used by TextureResolver lambda).
     /// Resolves textureRef (GUID or path) → GPU image, using GUID-based cache keys.

@@ -33,6 +33,14 @@ class IAssetLoader
     /// @brief Return GUIDs of assets this asset depends on.
     virtual std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) = 0;
 
+    /// @brief Try to load/reconstruct metadata from file content.
+    /// Called by AssetDatabase when no .meta file exists on disk.
+    /// Default returns false (caller will fall through to CreateMeta).
+    virtual bool LoadMeta(const char * /*content*/, const std::string & /*filePath*/, InfResourceMeta & /*metaData*/)
+    {
+        return false;
+    }
+
     /// @brief Optional: create .meta content for the asset.
     /// Default implementation does nothing. Override in loaders that
     /// need to populate meta beyond what AssetDatabase already provides.

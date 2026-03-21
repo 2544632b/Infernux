@@ -143,6 +143,26 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
 // =============================================================================
 // RegisterDependencies — wire up AssetDependencyGraph edges
 // =============================================================================
+// CreateMeta — material-specific .meta creation
+// =============================================================================
+
+void MaterialLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
+                                InfResourceMeta &metaData)
+{
+    if (!content) {
+        INFLOG_ERROR("Invalid material content for metadata creation");
+        return;
+    }
+
+    metaData.Init(content, contentSize, filePath, ResourceType::Material);
+
+    // Use filename stem as material name — authoritative name is set by
+    // MaterialLoader::Load() at runtime, so parsing JSON here is unnecessary.
+    std::filesystem::path path = ToFsPath(filePath);
+    metaData.AddMetadata("material_name", FromFsPath(path.stem()));
+}
+
+// =============================================================================
 
 void MaterialLoader::RegisterDependencies(const std::string &materialGuid, const InfMaterial &mat, AssetDatabase *adb)
 {
