@@ -56,10 +56,12 @@ MIT 协议。无版税、无运行时费用、无供应商锁定。
 ### 运行时基础
 
 - Vulkan 前向与延迟渲染
-- PBR 材质、级联阴影、MSAA、后处理
-- 基于 RenderGraph 的 Pass 编排
-- Jolt 物理（刚体 + 碰撞体）
-- 输入、音频基础、场景与资源系统
+- PBR 材质、级联阴影、MSAA、后处理（Bloom、色调映射、色彩校正、胶片颗粒等 8 种效果）
+- 基于 RenderGraph 的 Pass 编排（Python 可编程渲染管线）
+- Jolt 物理（刚体、4 种碰撞体、射线检测、碰撞回调、物理层矩阵）
+- SDL3 音频引擎（3D 空间化、AudioSource/AudioListener、流式播放）
+- 输入系统（Unity 风格键盘/鼠标 API）
+- 场景与资源系统（基于 GUID 的 AssetDatabase、.meta 文件、依赖追踪）
 
 ### Python 层
 
@@ -67,12 +69,19 @@ MIT 协议。无版税、无运行时费用、无供应商锁定。
 - `serialized_field` 元数据，支持 Inspector 编辑
 - 组件依赖与编辑器执行的装饰器
 - 脚本和内容热重载
-- 完整接入 Python 生态
+- 协程系统（WaitForSeconds、WaitUntil 等）
+- 游戏 UI 系统（Canvas、Text、Image、Button 及事件系统）
+- 预制体保存/实例化（含覆盖追踪）
+- 完整接入 Python 生态（NumPy、PyTorch、OpenCV 等）
 
 ### 编辑器
 
-- Hierarchy、Inspector、Scene View、Game View、Console、Project 面板
-- 选择、Gizmo、撤销重做、Play 模式场景隔离
+- 12 个面板：Hierarchy、Inspector、Scene View、Game View、Console、Project、UI 编辑器、工具栏、菜单栏、状态栏、Tags & Layers、构建设置
+- Transform Gizmo（平移/旋转/缩放）、多选、撤销重做
+- Play 模式场景隔离（序列化/恢复）
+- 材质、纹理、音频、着色器、字体检视器
+- 资产浏览器（缩略图预览、热重载）
+- 基于 Nuitka 的独立游戏构建器
 
 ---
 
@@ -279,20 +288,23 @@ C++ 引擎核心
 
 ### 已完成
 
-- 渲染与渲染管线
-- Python 脚本与编辑器集成
-- 编辑器核心创作流程
-- 资产标识与项目启动
-- 物理集成与场景交互
+- Vulkan 渲染（前向 + 延迟）、PBR、阴影、8 种后处理效果
+- Python 脚本与热重载、编辑器集成
+- 完整编辑器（12 个面板、Gizmo、撤销重做、Play 模式）
+- Jolt 物理（刚体、碰撞体、射线检测、碰撞层）
+- SDL3 音频（3D 空间化）
+- 资产管线（基于 GUID 的 AssetDatabase、.meta 文件、依赖图）
+- 预制体系统（保存/实例化/覆盖追踪）
+- 游戏 UI 系统（Canvas、Text、Image、Button、事件系统）
+- 基于 Nuitka 的独立游戏构建
+- Hub 启动器与 Windows 安装器
 
 ### 进行中
 
-- Prefab 工作流
-- UI 管线
-- 动画系统
-- 独立构建与导出
-- Hub 安装器与分发链路工程化
-- 大规模项目的生产化完善
+- 动画系统（骨骼动画、状态机）
+- 高级 UI 控件（ScrollView、Slider、布局组件）
+- 文档、教程与示例项目
+- 跨平台支持（Linux、macOS）
 
 ---
 
@@ -300,10 +312,10 @@ C++ 引擎核心
 
 | 版本 | 重点 |
 |:-----|:-----|
-| v0.1 | **当前** — 脚本、渲染、物理、编辑器均可用，已支持开发不含动画的基础游戏 |
-| v0.2 | Prefab 工作流、UI 完善、资产重命名改进 |
-| v0.3 | 动画系统、模型/内容管线 |
-| v0.4 | 独立构建、粒子、地形 |
+| v0.1 | **当前** — 渲染、物理、音频、脚本、编辑器、预制体、游戏 UI、独立构建均已可用，支持开发不含动画的基础游戏 |
+| v0.2 | 动画系统、高级 UI 控件（ScrollView、Slider、布局）、资产重命名改进 |
+| v0.3 | 粒子系统、地形、模型/内容管线改进 |
+| v0.4 | 跨平台（Linux/macOS）、网络基础 |
 | v1.0 | 文档、示例、生产就绪 |
 
 ---
@@ -316,7 +328,7 @@ python/InfEngine/     Python 引擎层与编辑器系统
 packaging/            启动器与项目管理工具
 docs/                 网站与生成文档入口
 external/             第三方依赖与子模块
-dev/                  规划文档与内部设计记录
+dev/                  发布用脚本
 ```
 
 ---

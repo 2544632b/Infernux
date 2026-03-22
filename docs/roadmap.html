@@ -59,35 +59,35 @@
                     <strong>v0.1</strong>
                     <h3 data-i18n="roadmap.release.current.title">Runtime and editor foundation</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.current.item1">Vulkan renderer, Python scripting, editor panels, asset workflows.</li>
-                        <li data-i18n="roadmap.release.current.item2">Usable for building basic games without animation — scripting, physics, rendering, and editor tooling all work.</li>
+                        <li data-i18n="roadmap.release.current.item1">Vulkan renderer, Python scripting, 12 editor panels, audio, physics, prefabs, game UI, standalone build.</li>
+                        <li data-i18n="roadmap.release.current.item2">Usable for building and exporting complete games without animation — scripting, physics, audio, rendering, UI and editor tooling all work.</li>
                     </ul>
                 </article>
                 <article class="release-card">
                     <div class="mini-tag" data-i18n="roadmap.release.next.tag">Next milestone</div>
                     <strong>v0.2</strong>
-                    <h3 data-i18n="roadmap.release.next.title">Prefab and authoring ergonomics</h3>
+                    <h3 data-i18n="roadmap.release.next.title">Animation and advanced UI</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.next.item1">Prefab workflows, UI completion, asset rename stability.</li>
-                        <li data-i18n="roadmap.release.next.item2">Reduce day-to-day production friction in editor-driven projects.</li>
+                        <li data-i18n="roadmap.release.next.item1">Skeletal animation, state machines, advanced UI controls.</li>
+                        <li data-i18n="roadmap.release.next.item2">Support content-heavy projects with animated characters and richer UI.</li>
                     </ul>
                 </article>
                 <article class="release-card">
                     <div class="mini-tag" data-i18n="roadmap.release.mid.tag">Mid-term</div>
                     <strong>v0.3</strong>
-                    <h3 data-i18n="roadmap.release.mid.title">Animation and richer content import</h3>
+                    <h3 data-i18n="roadmap.release.mid.title">Particles, terrain and content pipeline</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.mid.item1">Skeletal animation, state machines, model pipeline expansion.</li>
-                        <li data-i18n="roadmap.release.mid.item2">Push the engine from systems groundwork toward content-heavy production.</li>
+                        <li data-i18n="roadmap.release.mid.item1">GPU particles, terrain system, model pipeline expansion.</li>
+                        <li data-i18n="roadmap.release.mid.item2">Expand the range of visual content the engine can produce.</li>
                     </ul>
                 </article>
                 <article class="release-card">
                     <div class="mini-tag" data-i18n="roadmap.release.long.tag">Shipping path</div>
                     <strong>v0.4+</strong>
-                    <h3 data-i18n="roadmap.release.long.title">Standalone build and broader runtime scope</h3>
+                    <h3 data-i18n="roadmap.release.long.title">Cross-platform and networking</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.long.item1">Player export, particles, terrain, broader project completion path.</li>
-                        <li data-i18n="roadmap.release.long.item2">Move from preview tooling toward distributable game production.</li>
+                        <li data-i18n="roadmap.release.long.item1">Linux/macOS support, networking foundations, and broader project tooling.</li>
+                        <li data-i18n="roadmap.release.long.item2">Go from Windows-only preview to a multi-platform production engine.</li>
                     </ul>
                 </article>
             </section>
@@ -105,8 +105,8 @@
                         <div class="card-mark"><i class="fas fa-toolbox"></i></div>
                         <h3 data-i18n="roadmap.lanes.card1.title">Authoring band</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card1.item1">Prefab authoring and instance management.</li>
-                            <li data-i18n="roadmap.lanes.card1.item2">UI editor completion and editor UX hardening.</li>
+                            <li data-i18n="roadmap.lanes.card1.item1">Animation state machines and character workflows.</li>
+                            <li data-i18n="roadmap.lanes.card1.item2">Advanced UI controls (ScrollView, Slider, layout groups).</li>
                             <li data-i18n="roadmap.lanes.card1.item3">Safer asset rename and dependency repair paths.</li>
                         </ul>
                     </article>
@@ -114,8 +114,8 @@
                         <div class="card-mark"><i class="fas fa-layer-group"></i></div>
                         <h3 data-i18n="roadmap.lanes.card2.title">Content band</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card2.item1">Animation state machines and skeletal playback.</li>
-                            <li data-i18n="roadmap.lanes.card2.item2">Model import maturity for larger production scenes.</li>
+                            <li data-i18n="roadmap.lanes.card2.item1">GPU particle system.</li>
+                            <li data-i18n="roadmap.lanes.card2.item2">Terrain system for larger production scenes.</li>
                             <li data-i18n="roadmap.lanes.card2.item3">Better scene composition for reusable runtime content.</li>
                         </ul>
                     </article>
@@ -123,8 +123,8 @@
                         <div class="card-mark"><i class="fas fa-ship"></i></div>
                         <h3 data-i18n="roadmap.lanes.card3.title">Shipping band</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card3.item1">Standalone player build and packaging.</li>
-                            <li data-i18n="roadmap.lanes.card3.item2">Particle, terrain, and broader runtime feature coverage.</li>
+                            <li data-i18n="roadmap.lanes.card3.item1">Cross-platform support (Linux, macOS).</li>
+                            <li data-i18n="roadmap.lanes.card3.item2">Networking foundations.</li>
                             <li data-i18n="roadmap.lanes.card3.item3">More robust project lifecycle from prototype to release.</li>
                         </ul>
                     </article>
@@ -151,23 +151,23 @@
                 <div class="priority-grid">
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-cubes"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card1.title">Prefab lifecycle</h3>
-                        <p data-i18n="roadmap.priorities.card1.body">Without prefabs, scene reuse and team collaboration stay heavier than they should. This is one of the highest leverage missing systems.</p>
+                        <h3 data-i18n="roadmap.priorities.card1.title">Animation system</h3>
+                        <p data-i18n="roadmap.priorities.card1.body">Skeletal animation and state machines are the next major expansion needed to support real game content beyond static scenes.</p>
                     </article>
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-vector-square"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card2.title">UI pipeline completion</h3>
-                        <p data-i18n="roadmap.priorities.card2.body">The editor already exposes a strong base. Completing UI authoring turns that base into a more credible project workflow.</p>
+                        <h3 data-i18n="roadmap.priorities.card2.title">Advanced UI controls</h3>
+                        <p data-i18n="roadmap.priorities.card2.body">The base UI system (Canvas, Text, Image, Button) is done. Advanced controls like ScrollView, Slider, and layout groups are next.</p>
                     </article>
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-link"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card3.title">Asset GUID reliability</h3>
-                        <p data-i18n="roadmap.priorities.card3.body">Rename and move operations must become safer if the engine is going to support larger repositories and less fragile collaboration.</p>
+                        <h3 data-i18n="roadmap.priorities.card3.title">Documentation & tutorials</h3>
+                        <p data-i18n="roadmap.priorities.card3.body">The API reference is auto-generated. Tutorials, getting-started guides, and example projects are needed to lower the onboarding barrier.</p>
                     </article>
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-running"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card4.title">Animation path</h3>
-                        <p data-i18n="roadmap.priorities.card4.body">Animation is the bridge between a strong renderer and believable game content. It is the next major expansion in expressive scope.</p>
+                        <h3 data-i18n="roadmap.priorities.card4.title">Cross-platform support</h3>
+                        <p data-i18n="roadmap.priorities.card4.body">The engine currently targets Windows. Linux and macOS support requires build system work and platform testing.</p>
                     </article>
                 </div>
             </section>

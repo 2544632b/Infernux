@@ -632,12 +632,12 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent)
         m_rootObjects.push_back(std::move(clone));
     }
 
-    // If scene is playing, trigger lifecycle on the clone hierarchy
-    if (m_isPlaying) {
-        AwakeObject(ptr);
-        if (m_hasStarted) {
-            StartObject(ptr);
-        }
+    // Always awake C++ components so they register with subsystems
+    // (MeshRenderer → render registry, Collider → physics, etc.)
+    // This matches Scene::Deserialize which awakens unconditionally.
+    AwakeObject(ptr);
+    if (m_isPlaying && m_hasStarted) {
+        StartObject(ptr);
     }
 
     return ptr;
@@ -747,11 +747,12 @@ GameObject *Scene::InstantiateFromJson(const std::string &jsonStr, GameObject *p
         m_rootObjects.push_back(std::move(clone));
     }
 
-    if (m_isPlaying) {
-        AwakeObject(ptr);
-        if (m_hasStarted) {
-            StartObject(ptr);
-        }
+    // Always awake C++ components so they register with subsystems
+    // (MeshRenderer → render registry, Collider → physics, etc.)
+    // This matches Scene::Deserialize which awakens unconditionally.
+    AwakeObject(ptr);
+    if (m_isPlaying && m_hasStarted) {
+        StartObject(ptr);
     }
 
     ++m_structureVersion;

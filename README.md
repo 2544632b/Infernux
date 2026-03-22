@@ -56,10 +56,12 @@ MIT license. No royalties, no runtime fees, no vendor lock-in.
 ### Runtime foundation
 
 - Vulkan forward and deferred rendering
-- PBR materials, cascaded shadows, MSAA, post-processing
-- RenderGraph-based pass orchestration
-- Jolt physics (rigidbodies + colliders)
-- Input, audio groundwork, scene and resource systems
+- PBR materials, cascaded shadows, MSAA, post-processing (bloom, tonemapping, color grading, film grain, etc.)
+- RenderGraph-based pass orchestration (Python-scriptable render pipeline)
+- Jolt physics (rigidbodies, 4 collider types, raycasting, collision callbacks, physics layers)
+- SDL3 audio with 3D spatialization (AudioSource, AudioListener, streaming)
+- Input system (Unity-style keyboard/mouse API)
+- Scene and resource systems (GUID-based AssetDatabase, .meta files, dependency tracking)
 
 ### Python layer
 
@@ -67,12 +69,19 @@ MIT license. No royalties, no runtime fees, no vendor lock-in.
 - `serialized_field` metadata for Inspector-driven authoring
 - Decorators for component requirements and editor execution
 - Hot-reload for scripts and content
-- Full access to the Python ecosystem
+- Coroutine system (WaitForSeconds, WaitUntil, etc.)
+- Game UI system (Canvas, Text, Image, Button with event system)
+- Prefab save/instantiate with override tracking
+- Full access to the Python ecosystem (NumPy, PyTorch, OpenCV, etc.)
 
 ### Editor
 
-- Hierarchy, Inspector, Scene View, Game View, Console, Project panel
-- Selection, gizmos, undo/redo, play-mode scene isolation
+- 12 panels: Hierarchy, Inspector, Scene View, Game View, Console, Project, UI Editor, Toolbar, Menu Bar, Status Bar, Tags & Layers, Build Settings
+- Transform gizmos (translate/rotate/scale), multi-selection, undo/redo
+- Play-mode scene isolation (serialize/restore)
+- Material, texture, audio, shader, and font inspectors
+- Asset browser with thumbnail preview and hot-reload
+- Nuitka-based standalone game builder
 
 ---
 
@@ -283,20 +292,23 @@ This is the main architectural promise of the engine: **high-level iteration wit
 
 ### Working
 
-- Rendering and render-pipeline
-- Python scripting and editor integration
-- Core editor authoring loop
-- Asset identification and project launcher
-- Physics integration and scene interaction
+- Vulkan rendering (forward + deferred), PBR, shadows, 8 post-processing effects
+- Python scripting with hot-reload and editor integration
+- Full editor (12 panels, gizmos, undo/redo, play mode)
+- Jolt physics (rigidbodies, colliders, raycasting, collision layers)
+- SDL3 audio with 3D spatialization
+- Asset pipeline (GUID-based AssetDatabase, .meta files, dependency graph)
+- Prefab system (save/instantiate/override tracking)
+- Game UI system (Canvas, Text, Image, Button, event system)
+- Standalone game build via Nuitka
+- Hub launcher and Windows installer
 
 ### In progress
 
-- Prefab workflows
-- UI pipeline
-- Animation systems
-- Standalone build / export
-- Hub installer and distribution flow hardening
-- Fuller documentation, examples, and production path
+- Animation system (skeletal animation, state machines)
+- Advanced UI controls (ScrollView, Slider, layout groups)
+- Documentation, tutorials, and example projects
+- Cross-platform support (Linux, macOS)
 
 ---
 
@@ -304,10 +316,10 @@ This is the main architectural promise of the engine: **high-level iteration wit
 
 | Version | Focus |
 |:--------|:------|
-| v0.1 | **Current** — Scripting, rendering, physics, editor. Usable for basic games without animation |
-| v0.2 | Prefab workflows, UI completion, asset rename improvements |
-| v0.3 | Animation system, model/content pipeline |
-| v0.4 | Standalone build, particles, terrain |
+| v0.1 | **Current** — Rendering, physics, audio, scripting, editor, prefabs, game UI, standalone build. Usable for basic games without animation |
+| v0.2 | Animation system, advanced UI controls (ScrollView, Slider, layout), asset rename safety |
+| v0.3 | Particles, terrain, model/content pipeline improvements |
+| v0.4 | Cross-platform (Linux/macOS), networking foundations |
 | v1.0 | Documentation, examples, production readiness |
 
 ---
