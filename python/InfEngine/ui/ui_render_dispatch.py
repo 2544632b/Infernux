@@ -75,6 +75,7 @@ def text_align_to_float(align_h, align_v) -> tuple[float, float]:
 
 # Keyed by (component class name, backend_name)
 _RENDERERS: Dict[tuple[str, str], Callable] = {}
+_RESOLVED_RENDERERS: Dict[tuple[type, str], Optional[Callable]] = {}
 
 
 def register_ui_renderer(component_cls_name: str, backend: str, fn: Callable):
@@ -86,6 +87,7 @@ def register_ui_renderer(component_cls_name: str, backend: str, fn: Callable):
         fn: Callable with backend-specific signature (see below).
     """
     _RENDERERS[(component_cls_name, backend)] = fn
+    _RESOLVED_RENDERERS.clear()
 
 
 def get_ui_renderer(component_cls_name: str, backend: str) -> Optional[Callable]:
@@ -93,35 +95,54 @@ def get_ui_renderer(component_cls_name: str, backend: str) -> Optional[Callable]
     return _RENDERERS.get((component_cls_name, backend))
 
 
+def _resolve_renderer(elem_type: type, backend: str) -> Optional[Callable]:
+    cache_key = (elem_type, backend)
+    cached = _RESOLVED_RENDERERS.get(cache_key, None)
+    if cache_key in _RESOLVED_RENDERERS:
+        return cached
+
+    fn = _RENDERERS.get((elem_type.__name__, backend))
+    if fn is None:
+        for base in elem_type.__mro__[1:]:
+            fn = _RENDERERS.get((base.__name__, backend))
+            if fn is not None:
+                break
+
+    _RESOLVED_RENDERERS[cache_key] = fn
+    return fn
+
+
 def dispatch(elem, backend: str, **kwargs):
     """Dispatch rendering of *elem* to the registered handler.
 
     Returns True if a handler was found and called, False otherwise.
     """
-    cls_name = type(elem).__name__
-    fn = _RENDERERS.get((cls_name, backend))
-    if fn is not None:
-        fn(elem, **kwargs)
-        return True
-    # Walk MRO for base-class renderers
-    for base in type(elem).__mro__[1:]:
-        fn = _RENDERERS.get((base.__name__, backend))
-        if fn is not None:
-            fn(elem, **kwargs)
-            return True
-    return False
+    fn = _resolve_renderer(type(elem), backend)
+    if fn is None:
+        return False
+    fn(elem, **kwargs)
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  Built-in renderers — EDITOR back-end (ImGui draw-list)
 # ══════════════════════════════════════════════════════════════════════
 
-def _editor_render_text(elem, *, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
+def _editor_render_text(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
     """Render a UIText element in the UI Editor panel."""
-    attrs = extract_common(elem)
-    ta = _extract_text_attrs(elem, scale=zoom)
-    text_size = max(1.0, ta["font_size"] * zoom)
-    c = attrs["color"]
+    color = _pad_rgba(getattr(elem, "color", None))
+    opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
+    rotation = float(getattr(elem, "rotation", 0.0))
+    mirror_h = bool(getattr(elem, "mirror_x", False))
+    mirror_v = bool(getattr(elem, "mirror_y", False))
+    font_path = str(getattr(elem, "font_path", "") or "")
+    font_size = float(getattr(elem, "font_size", Theme.UI_DEFAULT_FONT_SIZE))
+    line_height = float(getattr(elem, "line_height", Theme.UI_DEFAULT_LINE_HEIGHT))
+    letter_spacing = float(getattr(elem, "letter_spacing", Theme.UI_DEFAULT_LETTER_SPACING)) * zoom
+    align_h = getattr(elem, "text_align_h", TextAlignH.Left)
+    align_v = getattr(elem, "text_align_v", TextAlignV.Top)
+    align_x, align_y = text_align_to_float(align_h, align_v)
+    text_size = max(1.0, font_size * zoom)
     editor_wrap_width = base_sw
     if getattr(elem, "is_auto_width", lambda: False)():
         editor_wrap_width = 0.0
@@ -130,35 +151,40 @@ def _editor_render_text(elem, *, ctx, base_sx, base_sy, base_sw, base_sh, zoom, 
     ctx.draw_text_ex_aligned(
         base_sx, base_sy, base_sx + base_sw, base_sy + base_sh,
         elem.text,
-        c[0], c[1], c[2], c[3] * attrs["opacity"],
-        ta["align_x"], ta["align_y"], text_size,
+        color[0], color[1], color[2], color[3] * opacity,
+        align_x, align_y, text_size,
         editor_wrap_width,
-        attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"], False,
-        ta["font_path"], ta["line_height"], ta["letter_spacing"],
+        rotation, mirror_h, mirror_v, False,
+        font_path, line_height, letter_spacing,
     )
 
 
-def _editor_render_image(elem, *, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
+def _editor_render_image(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
     """Render a UIImage element in the UI Editor panel."""
-    attrs = extract_common(elem)
-    cr, cg, cb = attrs["color"][0], attrs["color"][1], attrs["color"][2]
-    ca = attrs["color"][3] * attrs["opacity"]
+    color = _pad_rgba(getattr(elem, "color", None))
+    opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
+    rotation = float(getattr(elem, "rotation", 0.0))
+    mirror_h = bool(getattr(elem, "mirror_x", False))
+    mirror_v = bool(getattr(elem, "mirror_y", False))
+    corner_radius = float(getattr(elem, "corner_radius", 0.0))
+    cr, cg, cb = color[0], color[1], color[2]
+    ca = color[3] * opacity
     tex_path = str(getattr(elem, "texture_path", "") or "")
     tex_id = get_tex_id(tex_path) if tex_path else 0
-    rounding = attrs["corner_radius"] * zoom
+    rounding = corner_radius * zoom
     if tex_id:
         ctx.draw_image_rect(
             tex_id, base_sx, base_sy,
             base_sx + base_sw, base_sy + base_sh,
             0.0, 0.0, 1.0, 1.0,
             cr, cg, cb, ca,
-            attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"],
+            rotation, mirror_h, mirror_v,
             rounding,
         )
     else:
         _draw_editor_placeholder(ctx, base_sx, base_sy, base_sw, base_sh,
-                                 cr, cg, cb, ca, rounding, attrs["corner_radius"] * zoom,
-                                 attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"])
+                                 cr, cg, cb, ca, rounding, corner_radius * zoom,
+                                 rotation, mirror_h, mirror_v)
 
 def _draw_editor_placeholder(ctx, x, y, w, h, cr, cg, cb, ca, rounding, rect_rounding, rotation=0.0, mirror_h=False, mirror_v=False):
     """Draw a placeholder rect with tint + cross pattern (editor backend)."""
@@ -176,66 +202,100 @@ def _draw_editor_placeholder(ctx, x, y, w, h, cr, cg, cb, ca, rounding, rect_rou
 #  Built-in renderers — RUNTIME back-end (GPU ScreenUI renderer)
 # ══════════════════════════════════════════════════════════════════════
 
-def _runtime_render_text(elem, *, renderer, ui_list, sx, sy, sw, sh,
+def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
                          ref_w, ref_h, scale_x, scale_y, text_scale, get_tex_id, **_kw):
     """Render a UIText element via the GPU ScreenUI renderer."""
-    attrs = extract_common(elem)
-    ta = _extract_text_attrs(elem, scale=text_scale)
+    color = _pad_rgba(getattr(elem, "color", None))
+    opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
+    rotation = float(getattr(elem, "rotation", 0.0))
+    mirror_h = bool(getattr(elem, "mirror_x", False))
+    mirror_v = bool(getattr(elem, "mirror_y", False))
+    align_h = getattr(elem, "text_align_h", TextAlignH.Left)
+    align_v = getattr(elem, "text_align_v", TextAlignV.Top)
+    align_x, align_y = text_align_to_float(align_h, align_v)
+    font_path = str(getattr(elem, "font_path", "") or "")
+    font_size_raw = float(getattr(elem, "font_size", Theme.UI_DEFAULT_FONT_SIZE))
+    line_height = float(getattr(elem, "line_height", Theme.UI_DEFAULT_LINE_HEIGHT))
+    letter_spacing = float(getattr(elem, "letter_spacing", Theme.UI_DEFAULT_LETTER_SPACING)) * text_scale
 
     wrap_width = float(elem.get_wrap_width()) if hasattr(elem, "get_wrap_width") else 0.0
     scaled_wrap_width = 0.0 if wrap_width <= 0.0 else wrap_width * text_scale
 
-    measured_w, measured_h = renderer.measure_text(
-        elem.text,
-        ta["font_size"] * text_scale,
-        scaled_wrap_width,
-        ta["font_path"], ta["line_height"], ta["letter_spacing"],
-    )
-    if getattr(elem, "is_auto_width", lambda: False)():
-        elem.set_size_preserve_corner(
-            max(1.0, float(measured_w) / max(text_scale, 1e-6)),
-            float(elem.height), ref_w, ref_h, "top_left",
+    auto_width = getattr(elem, "is_auto_width", lambda: False)()
+    auto_height = getattr(elem, "is_auto_height", lambda: False)()
+    if auto_width or auto_height:
+        measure_key = (
+            elem.text,
+            font_path,
+            font_size_raw,
+            line_height,
+            letter_spacing,
+            scaled_wrap_width,
+            text_scale,
         )
-        sw = elem.width * scale_x
-    elif getattr(elem, "is_auto_height", lambda: False)():
-        elem.set_size_preserve_corner(
-            float(elem.width),
-            max(1.0, float(measured_h) / max(text_scale, 1e-6)),
-            ref_w, ref_h, "top_left",
-        )
-        sh = elem.height * scale_y
+        if getattr(elem, "_runtime_measure_key", None) != measure_key:
+            elem._runtime_measure_size = renderer.measure_text(
+                elem.text,
+                font_size_raw * text_scale,
+                scaled_wrap_width,
+                font_path, line_height, letter_spacing,
+            )
+            elem._runtime_measure_key = measure_key
+        measured_w, measured_h = elem._runtime_measure_size
 
-    font_size = max(1.0, ta["font_size"] * text_scale)
-    c = attrs["color"]
-    ca = c[3] * attrs["opacity"]
+        if auto_width:
+            target_width = max(1.0, float(measured_w) / max(text_scale, 1e-6))
+            if abs(float(elem.width) - target_width) > 0.01:
+                elem.set_size_preserve_corner(
+                    target_width,
+                    float(elem.height), ref_w, ref_h, "top_left",
+                )
+            sw = elem.width * scale_x
+        elif auto_height:
+            target_height = max(1.0, float(measured_h) / max(text_scale, 1e-6))
+            if abs(float(elem.height) - target_height) > 0.01:
+                elem.set_size_preserve_corner(
+                    float(elem.width),
+                    target_height,
+                    ref_w, ref_h, "top_left",
+                )
+            sh = elem.height * scale_y
+
+    font_size = max(1.0, font_size_raw * text_scale)
+    ca = color[3] * opacity
     renderer.add_text(
         ui_list,
         sx, sy, sx + sw, sy + sh,
         elem.text,
-        c[0], c[1], c[2], ca,
-        ta["align_x"], ta["align_y"], font_size,
+        color[0], color[1], color[2], ca,
+        align_x, align_y, font_size,
         0.0 if getattr(elem, "is_auto_width", lambda: False)() else scaled_wrap_width,
-        attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"],
-        ta["font_path"], ta["line_height"], ta["letter_spacing"],
+        rotation, mirror_h, mirror_v,
+        font_path, line_height, letter_spacing,
     )
 
 
-def _runtime_render_image(elem, *, renderer, ui_list, sx, sy, sw, sh,
+def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
                           scale_x, scale_y, get_tex_id, **_kw):
     """Render a UIImage element via the GPU ScreenUI renderer."""
-    attrs = extract_common(elem)
-    cr, cg, cb = attrs["color"][0], attrs["color"][1], attrs["color"][2]
-    ca = attrs["color"][3] * attrs["opacity"]
+    color = _pad_rgba(getattr(elem, "color", None))
+    opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
+    rotation = float(getattr(elem, "rotation", 0.0))
+    mirror_h = bool(getattr(elem, "mirror_x", False))
+    mirror_v = bool(getattr(elem, "mirror_y", False))
+    corner_radius = float(getattr(elem, "corner_radius", 0.0))
+    cr, cg, cb = color[0], color[1], color[2]
+    ca = color[3] * opacity
     tex_path = getattr(elem, "texture_path", "") or ""
     tex_id = get_tex_id(tex_path) if tex_path else 0
-    rounding = attrs["corner_radius"] * min(scale_x, scale_y)
+    rounding = corner_radius * min(scale_x, scale_y)
     if tex_id:
         renderer.add_image(
             ui_list, tex_id,
             sx, sy, sx + sw, sy + sh,
             0.0, 0.0, 1.0, 1.0,
             cr, cg, cb, ca,
-            attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"],
+            rotation, mirror_h, mirror_v,
             rounding,
         )
     else:
@@ -286,7 +346,7 @@ def _get_label_attrs(elem, scale: float):
     return label, lc, ta
 
 
-def _editor_render_button(elem, *, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
+def _editor_render_button(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
     """Render a UIButton element in the UI Editor panel."""
     attrs = extract_common(elem)
     bg = _get_button_bg(elem)
@@ -327,19 +387,21 @@ def _editor_render_button(elem, *, ctx, base_sx, base_sy, base_sw, base_sh, zoom
         )
 
 
-def _runtime_render_button(elem, *, renderer, ui_list, sx, sy, sw, sh,
+def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
                            scale_x, scale_y, text_scale, get_tex_id, **_kw):
     """Render a UIButton element via the GPU ScreenUI renderer."""
-    attrs = extract_common(elem)
-
-    # Tint from visual state
+    opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
+    rotation = float(getattr(elem, "rotation", 0.0))
+    mirror_h = bool(getattr(elem, "mirror_x", False))
+    mirror_v = bool(getattr(elem, "mirror_y", False))
+    corner_radius = float(getattr(elem, "corner_radius", 0.0))
     tint = _pad_rgba(elem.get_current_tint() if hasattr(elem, "get_current_tint") else None)
     bg = _get_button_bg(elem)
     r = bg[0] * tint[0]
     g = bg[1] * tint[1]
     b = bg[2] * tint[2]
-    a = bg[3] * tint[3] * attrs["opacity"]
-    rounding = attrs["corner_radius"] * min(scale_x, scale_y)
+    a = bg[3] * tint[3] * opacity
+    rounding = corner_radius * min(scale_x, scale_y)
 
     # Background: texture image or solid fill
     tex_path = getattr(elem, "texture_path", "") or ""
@@ -350,25 +412,32 @@ def _runtime_render_button(elem, *, renderer, ui_list, sx, sy, sw, sh,
             sx, sy, sx + sw, sy + sh,
             0.0, 0.0, 1.0, 1.0,
             r, g, b, a,
-            attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"],
+            rotation, mirror_h, mirror_v,
             rounding,
         )
     else:
         renderer.add_filled_rect(ui_list, sx, sy, sx + sw, sy + sh, r, g, b, a, rounding)
 
     # Label
-    label, lc, ta = _get_label_attrs(elem, scale=text_scale)
+    label = getattr(elem, "label", "") or ""
     if label:
-        font_size = max(1.0, ta["font_size"] * text_scale)
+        lc = _pad_rgba(getattr(elem, "label_color", None), default=Theme.UI_DEFAULT_LABEL_COLOR)
+        align_h = getattr(elem, "text_align_h", TextAlignH.Center)
+        align_v = getattr(elem, "text_align_v", TextAlignV.Center)
+        align_x, align_y = text_align_to_float(align_h, align_v)
+        font_path = str(getattr(elem, "font_path", "") or "")
+        line_height = float(getattr(elem, "line_height", Theme.UI_DEFAULT_LINE_HEIGHT))
+        letter_spacing = float(getattr(elem, "letter_spacing", Theme.UI_DEFAULT_LETTER_SPACING)) * text_scale
+        font_size = max(1.0, float(getattr(elem, "font_size", Theme.UI_DEFAULT_FONT_SIZE)) * text_scale)
         renderer.add_text(
             ui_list,
             sx, sy, sx + sw, sy + sh,
             label,
-            lc[0], lc[1], lc[2], lc[3] * attrs["opacity"],
-            ta["align_x"], ta["align_y"], font_size,
+            lc[0], lc[1], lc[2], lc[3] * opacity,
+            align_x, align_y, font_size,
             sw,
-            attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"],
-            ta["font_path"], ta["line_height"], ta["letter_spacing"],
+            rotation, mirror_h, mirror_v,
+            font_path, line_height, letter_spacing,
         )
 
 
