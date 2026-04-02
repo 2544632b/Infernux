@@ -6,19 +6,19 @@ Skipped entirely in standalone player builds.
 
 from __future__ import annotations
 
-from Infernux.engine.ui.menu_bar import MenuBarPanel as MenuBarPanel
+from Infernux.lib import MenuBarPanel as MenuBarPanel
 from Infernux.engine.ui.closable_panel import ClosablePanel as ClosablePanel
-from Infernux.engine.ui.hierarchy_panel import HierarchyPanel as HierarchyPanel
+from Infernux.lib import HierarchyPanel as HierarchyPanel
 from Infernux.engine.ui.inspector_panel import InspectorPanel as InspectorPanel
-from Infernux.engine.ui.console_panel import ConsolePanel as ConsolePanel
+from Infernux.lib import ConsolePanel as ConsolePanel
 from Infernux.engine.ui.scene_view_panel import SceneViewPanel as SceneViewPanel
 from Infernux.engine.ui.game_view_panel import GameViewPanel as GameViewPanel
-from Infernux.engine.ui.project_panel import ProjectPanel as ProjectPanel
+from Infernux.lib import ProjectPanel as ProjectPanel
 from Infernux.engine.ui.window_manager import WindowManager as WindowManager, WindowInfo as WindowInfo
-from Infernux.engine.ui.toolbar_panel import ToolbarPanel as ToolbarPanel
+from Infernux.lib import ToolbarPanel as ToolbarPanel
 from Infernux.engine.ui.frame_scheduler_panel import FrameSchedulerPanel as FrameSchedulerPanel
 from Infernux.engine.ui.tag_layer_settings import TagLayerSettingsPanel as TagLayerSettingsPanel
-from Infernux.engine.ui.status_bar import StatusBarPanel as StatusBarPanel
+from Infernux.lib import StatusBarPanel as StatusBarPanel
 from Infernux.engine.ui.engine_status import EngineStatus as EngineStatus
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel as BuildSettingsPanel
 from Infernux.engine.ui.viewport_utils import ViewportInfo as ViewportInfo, capture_viewport_info as capture_viewport_info

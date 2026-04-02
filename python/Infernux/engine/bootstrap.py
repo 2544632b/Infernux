@@ -20,17 +20,12 @@ from Infernux.engine.resources_manager import ResourcesManager
 from Infernux.engine.play_mode import PlayModeManager, PlayModeState
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.ui import (
-    MenuBarPanel,
     FrameSchedulerPanel,
-    ToolbarPanel,
-    HierarchyPanel,
     InspectorPanel,
     SceneViewPanel,
     GameViewPanel,
-    ProjectPanel,
     WindowManager,
     TagLayerSettingsPanel,
-    StatusBarPanel,
     BuildSettingsPanel,
     UIEditorPanel,
     EditorPanel,
@@ -81,9 +76,9 @@ class EditorBootstrap:
         self.frame_scheduler = None
         self.menu_bar = None
         self.toolbar = None
-        self.hierarchy: Optional[HierarchyPanel] = None
+        self.hierarchy = None
         self.inspector_panel: Optional[InspectorPanel] = None
-        self.project_panel: Optional[ProjectPanel] = None
+        self.project_panel = None
         self.console = None  # C++ ConsolePanel (native)
         self.status_bar = None
         self.scene_view: Optional[SceneViewPanel] = None
@@ -236,8 +231,10 @@ class EditorBootstrap:
             "inspector":          lambda: InspectorPanel(engine=engine),
             "scene_view":         lambda: SceneViewPanel(engine=engine),
             "game_view":          lambda: GameViewPanel(engine=engine),
-            "project":            lambda: ProjectPanel(root_path=project_path, engine=engine),
+            "project":            lambda: self._create_native_project_panel(),
             "toolbar":            lambda: self._create_native_toolbar(engine),
+            "console":            lambda: self._create_native_console(),
+            "hierarchy":          lambda: self._create_native_hierarchy(),
             "tag_layer_settings": lambda: self._create_tag_layer_panel(),
         }
         for reg in PanelRegistry.get_registrations():
@@ -250,6 +247,33 @@ class EditorBootstrap:
         panel = TagLayerSettingsPanel()
         panel.set_project_path(self.project_path)
         return panel
+
+    def _create_native_project_panel(self):
+        """Create a fresh C++ ProjectPanel with all callbacks wired."""
+        from Infernux.lib import ProjectPanel as NativeProjectPanel
+        pp = NativeProjectPanel()
+        # Re-use the same wiring logic; temporarily swap so the method
+        # wires the new panel, then restore.
+        old = self.project_panel
+        self.project_panel = pp
+        self._wire_project_callbacks()
+        self.project_panel = old
+        return pp
+
+    def _create_native_console(self):
+        """Create a fresh C++ ConsolePanel for WindowManager re-open."""
+        from Infernux.lib import ConsolePanel as NativeConsolePanel
+        return NativeConsolePanel()
+
+    def _create_native_hierarchy(self):
+        """Create a fresh C++ HierarchyPanel with all callbacks wired."""
+        from Infernux.lib import HierarchyPanel as NativeHierarchyPanel
+        hp = NativeHierarchyPanel()
+        old = self.hierarchy
+        self.hierarchy = hp
+        self._wire_hierarchy_callbacks()
+        self.hierarchy = old
+        return hp
 
     def _create_native_toolbar(self, engine):
         """Create a fresh C++ ToolbarPanel with all callbacks wired."""
@@ -380,15 +404,18 @@ class EditorBootstrap:
         engine.register_gui("inspector", self.inspector_panel)
         wm.register_existing_window("inspector", self.inspector_panel, "inspector")
 
-        # Project
-        self.project_panel = ProjectPanel(root_path=self.project_path, engine=engine)
-        self.project_panel.set_window_manager(wm)
+        # Project (C++ native panel — replaces Python ProjectPanel)
+        from Infernux.lib import ProjectPanel as NativeProjectPanel
+        self.project_panel = NativeProjectPanel()
+        self._wire_project_callbacks()
         engine.register_gui("project", self.project_panel)
         wm.register_existing_window("project", self.project_panel, "project")
 
         ps = _panel_state.get("project")
         if ps:
-            self.project_panel.load_state(ps)
+            path = ps.get("current_path", "")
+            if path:
+                self.project_panel.set_current_path(path)
 
         # Console (C++ native panel — replaces Python ConsolePanel)
         from Infernux.lib import ConsolePanel as NativeConsolePanel
@@ -447,7 +474,7 @@ class EditorBootstrap:
         engine.register_gui("ui_editor", self.ui_editor)
         wm.register_existing_window("ui_editor", self.ui_editor, "ui_editor")
 
-        self.project_panel.set_on_state_changed(self._persist_editor_state)
+        self.project_panel.on_state_changed = self._persist_editor_state
         wm.set_on_state_changed(self._persist_editor_state)
 
         ws = _panel_state.get("window_manager")
@@ -576,12 +603,12 @@ class EditorBootstrap:
 
         # Subscribe to DebugConsole for latest message + count updates
         from Infernux.debug import DebugConsole, LogType
-        from Infernux.engine.ui.console_panel import ConsolePanel as PyConsolePanel
+        from Infernux.engine.ui.console_utils import is_internal, sanitize_text
 
         def _on_log_entry(entry):
-            if PyConsolePanel._is_internal(entry):
+            if is_internal(entry):
                 return
-            msg = PyConsolePanel._sanitize_text(getattr(entry, 'message', ''))
+            msg = sanitize_text(getattr(entry, 'message', ''))
             level_map = {
                 LogType.LOG: "info",
                 LogType.WARNING: "warning",
@@ -1215,6 +1242,195 @@ class EditorBootstrap:
 
         hp.delete_selected_objects = _delete_selected_objects
 
+    # ── Phase 5: Wire Project Panel callbacks ──────────────────────────
+
+    def _wire_project_callbacks(self):
+        """Wire C++ ProjectPanel callbacks to Python managers."""
+        pp = self.project_panel
+        from Infernux.engine.i18n import t as _t
+        from Infernux.engine.ui import project_file_ops as file_ops
+        from Infernux.engine.ui import project_utils
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        # -- Engine subsystems --
+        native_engine = self.engine.get_native_engine()
+        if native_engine:
+            pp.setup_from_engine(native_engine)
+
+        pp.set_root_path(self.project_path)
+
+        import Infernux.resources as _resources
+        pp.set_icons_directory(_resources.file_type_icons_dir)
+
+        # -- Translation --
+        pp.translate = _t
+
+        # -- Asset database access (via engine) --
+        adb = self.engine.get_asset_database()
+
+        pp.get_guid_from_path = lambda path: (
+            adb.get_guid_from_path(path) if adb else ""
+        )
+        pp.get_path_from_guid = lambda guid: (
+            adb.get_path_from_guid(guid) if adb else ""
+        )
+
+        # -- File operation callbacks --
+        pp.create_folder = lambda cur, name: file_ops.create_folder(cur, name)
+        pp.create_script = lambda cur, name: file_ops.create_script(cur, name, adb)
+        pp.create_shader = lambda cur, name, typ: file_ops.create_shader(cur, name, typ, adb)
+        pp.create_material = lambda cur, name: file_ops.create_material(cur, name, adb)
+        pp.create_scene = lambda cur, name: file_ops.create_scene(cur, name, adb)
+        pp.do_rename = lambda old, new_name: (
+            file_ops.do_rename(old, new_name, adb) or ""
+        )
+        pp.get_unique_name = lambda cur, base, ext: (
+            file_ops.get_unique_name(cur, base, ext)
+        )
+        pp.move_item_to_directory = lambda item, dest: (
+            file_ops.move_item_to_directory(item, dest, adb) or ""
+        )
+
+        # -- Delete (with Win32 confirmation dialog) --
+        def _delete_items(paths):
+            import ctypes, os
+            valid = []
+            seen = set()
+            for p in paths or []:
+                if not p or not os.path.exists(p) or p in seen:
+                    continue
+                seen.add(p)
+                valid.append(p)
+            if not valid:
+                return
+
+            title = _t("project.delete_confirm_title")
+            if len(valid) == 1:
+                msg = _t("project.delete_confirm_msg").replace(
+                    "{name}", os.path.basename(valid[0]))
+            else:
+                msg = _t("project.delete_confirm_multi_msg").replace(
+                    "{count}", str(len(valid)))
+            # MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2
+            result = ctypes.windll.user32.MessageBoxW(
+                0, msg, title, 0x1 | 0x30 | 0x100)
+            if result != 1:  # IDOK
+                return
+
+            for item_path in sorted(
+                valid, key=lambda p: (p.count(os.sep), len(p)), reverse=True
+            ):
+                if os.path.exists(item_path):
+                    file_ops.delete_item(item_path, adb)
+
+        pp.delete_items = _delete_items
+
+        # -- Create prefab from hierarchy drag --
+        def _create_prefab_from_hierarchy(obj_id, current_path):
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                return
+            game_object = scene.find_by_id(obj_id)
+            if not game_object:
+                return
+            ok, result = file_ops.create_prefab_from_gameobject(
+                game_object, current_path, adb)
+            if not ok:
+                from Infernux.debug import Debug
+                Debug.log_warning(f"Failed to create prefab: {result}")
+
+        pp.create_prefab_from_hierarchy = _create_prefab_from_hierarchy
+
+        # -- Open callbacks --
+        pp.open_file = lambda path: project_utils.open_file_with_system(
+            path, project_root=self.project_path)
+
+        def _open_scene(file_path):
+            from Infernux.debug import Debug
+            from Infernux.engine.deferred_task import DeferredTaskRunner
+            from Infernux.engine.play_mode import PlayModeManager
+
+            def _open_after_stop():
+                sfm = SceneFileManager.instance()
+                if sfm:
+                    return bool(sfm.open_scene(file_path))
+                Debug.log_warning("SceneFileManager not initialized")
+                return False
+
+            play_mode = PlayModeManager.instance()
+            if play_mode and play_mode.is_playing:
+                runner = DeferredTaskRunner.instance()
+                if runner.is_busy:
+                    Debug.log_warning(
+                        "Cannot open scene while another deferred task is running")
+                    return
+
+                def _on_stop(ok):
+                    if not ok:
+                        Debug.log_warning(
+                            "Play Mode stop did not complete; scene open cancelled")
+                        return
+                    try:
+                        from Infernux.lib import SceneManager as NativeSM
+                        nsm = NativeSM.instance()
+                    except Exception:
+                        nsm = None
+                    if play_mode.is_playing:
+                        Debug.log_warning(
+                            "Scene open cancelled — Play Mode still active")
+                        return
+                    if nsm and nsm.is_playing():
+                        Debug.log_warning(
+                            "Scene open cancelled — native Play Mode still active")
+                        return
+                    _open_after_stop()
+
+                if not play_mode.exit_play_mode(on_complete=_on_stop):
+                    Debug.log_warning(
+                        "Failed to stop Play Mode before opening scene")
+                return
+
+            sfm = SceneFileManager.instance()
+            if sfm:
+                sfm.open_scene(file_path)
+            else:
+                Debug.log_warning("SceneFileManager not initialized")
+
+        pp.open_scene = _open_scene
+
+        pp.open_prefab_mode = lambda path: (
+            SceneFileManager.instance().open_prefab_mode(path)
+            if SceneFileManager.instance() else None
+        )
+
+        pp.reveal_in_explorer = lambda path: (
+            project_utils.reveal_in_file_explorer(path)
+        )
+
+        # -- Script validation for drag-drop --
+        def _validate_script_component(file_path):
+            try:
+                from Infernux.components.script_loader import (
+                    load_component_from_file, ScriptLoadError)
+                load_component_from_file(file_path)
+                return True
+            except Exception:
+                return False
+
+        pp.validate_script_component = _validate_script_component
+
+        # -- Inspector invalidation --
+        def _invalidate_asset_inspector(path):
+            try:
+                from Infernux.engine.ui.asset_inspector import (
+                    invalidate_asset)
+                invalidate_asset(path)
+            except Exception:
+                pass
+
+        pp.invalidate_asset_inspector = _invalidate_asset_inspector
+
     # ── Phase 7: Wire selection system ─────────────────────────────────
 
     def _wire_selection_system(self):
@@ -1225,8 +1441,8 @@ class EditorBootstrap:
         event_bus = self.event_bus
 
         hierarchy.on_selection_changed = self._on_hierarchy_selected
-        project.set_on_file_selected(self._on_project_selected)
-        project.set_on_empty_area_clicked(self._on_project_panel_empty_clicked)
+        project.on_file_selected = self._on_project_selected
+        project.on_empty_area_clicked = self._on_project_panel_empty_clicked
         scene_view.set_on_object_picked(self._on_scene_view_picked)
         scene_view.set_on_box_select(self._on_box_select_done)
         hierarchy.on_double_click_focus = (
@@ -1573,7 +1789,7 @@ class EditorBootstrap:
                 "error_pause": self.console.error_pause,
                 "auto_scroll": self.console.auto_scroll,
             })
-        _panel_state.put("project", self.project_panel.save_state())
+        _panel_state.put("project", {"current_path": self.project_panel.get_current_path()})
         _panel_state.put("window_manager", self.window_manager.save_state())
         _panel_state.save()
 

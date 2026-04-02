@@ -1,10 +1,15 @@
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUIRenderable.h"
 #include "gui/InxResourcePreviewer.h"
+#include "Infernux.h"
+#ifdef DrawText
+#undef DrawText
+#endif
 #include <function/editor/ConsolePanel.h>
 #include <function/editor/EditorPanel.h>
 #include <function/editor/HierarchyPanel.h>
 #include <function/editor/MenuBarPanel.h>
+#include <function/editor/ProjectPanel.h>
 #include <function/editor/StatusBarPanel.h>
 #include <function/editor/ToolbarPanel.h>
 #include <pybind11/chrono.h>
@@ -768,6 +773,48 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("translate", &HierarchyPanel::translate)
         // Warning
         .def_readwrite("show_warning", &HierarchyPanel::showWarning);
+
+    // ── ProjectPanel ───────────────────────────────────────────────────
+    py::class_<ProjectPanel, EditorPanel, std::shared_ptr<ProjectPanel>>(m, "ProjectPanel")
+        .def(py::init<>())
+        // Public API
+        .def("set_root_path", &ProjectPanel::SetRootPath, py::arg("path"))
+        .def("setup_from_engine", [](ProjectPanel &self, Infernux &engine) {
+            self.SetRenderer(engine.GetRenderer());
+            self.SetAssetDatabase(engine.GetAssetDatabase());
+        }, py::arg("engine"))
+        .def("set_icons_directory", &ProjectPanel::SetIconsDirectory, py::arg("dir"))
+        .def("clear_selection", &ProjectPanel::ClearSelection)
+        .def("invalidate_material_thumbnail", &ProjectPanel::InvalidateMaterialThumbnail, py::arg("file_path"))
+        .def("get_current_path", &ProjectPanel::GetCurrentPath)
+        .def("set_current_path", &ProjectPanel::SetCurrentPath, py::arg("path"))
+        // Notification callbacks
+        .def_readwrite("on_file_selected", &ProjectPanel::onFileSelected)
+        .def_readwrite("on_empty_area_clicked", &ProjectPanel::onEmptyAreaClicked)
+        .def_readwrite("on_state_changed", &ProjectPanel::onStateChanged)
+        // File operation callbacks
+        .def_readwrite("create_folder", &ProjectPanel::createFolder)
+        .def_readwrite("create_script", &ProjectPanel::createScript)
+        .def_readwrite("create_shader", &ProjectPanel::createShader)
+        .def_readwrite("create_material", &ProjectPanel::createMaterial)
+        .def_readwrite("create_scene", &ProjectPanel::createScene)
+        .def_readwrite("create_prefab_from_hierarchy", &ProjectPanel::createPrefabFromHierarchy)
+        .def_readwrite("delete_items", &ProjectPanel::deleteItems)
+        .def_readwrite("do_rename", &ProjectPanel::doRename)
+        .def_readwrite("get_unique_name", &ProjectPanel::getUniqueName)
+        .def_readwrite("move_item_to_directory", &ProjectPanel::moveItemToDirectory)
+        // Open/Reveal callbacks
+        .def_readwrite("open_file", &ProjectPanel::openFile)
+        .def_readwrite("open_scene", &ProjectPanel::openScene)
+        .def_readwrite("open_prefab_mode", &ProjectPanel::openPrefabMode)
+        .def_readwrite("reveal_in_explorer", &ProjectPanel::revealInExplorer)
+        // Validation / GUID callbacks
+        .def_readwrite("validate_script_component", &ProjectPanel::validateScriptComponent)
+        .def_readwrite("get_guid_from_path", &ProjectPanel::getGuidFromPath)
+        .def_readwrite("get_path_from_guid", &ProjectPanel::getPathFromGuid)
+        .def_readwrite("invalidate_asset_inspector", &ProjectPanel::invalidateAssetInspector)
+        // Translation
+        .def_readwrite("translate", &ProjectPanel::translate);
 }
 
 } // namespace infernux

@@ -5,19 +5,19 @@ import os as _os
 # editor panels are never needed.  Skipping them avoids pulling in
 # dozens of editor-only modules and keeps startup fast.
 if not _os.environ.get("_INFERNUX_PLAYER_MODE"):
-    from .menu_bar import MenuBarPanel
+    from Infernux.lib import MenuBarPanel
     from .closable_panel import ClosablePanel
-    from .hierarchy_panel import HierarchyPanel
+    from Infernux.lib import HierarchyPanel
     from .inspector_panel import InspectorPanel
-    from .console_panel import ConsolePanel
+    from Infernux.lib import ConsolePanel
     from .scene_view_panel import SceneViewPanel
     from .game_view_panel import GameViewPanel
-    from .project_panel import ProjectPanel
+    from Infernux.lib import ProjectPanel
     from .window_manager import WindowManager, WindowInfo
-    from .toolbar_panel import ToolbarPanel
+    from Infernux.lib import ToolbarPanel
     from .frame_scheduler_panel import FrameSchedulerPanel
     from .tag_layer_settings import TagLayerSettingsPanel
-    from .status_bar import StatusBarPanel
+    from Infernux.lib import StatusBarPanel
     from .engine_status import EngineStatus
     from .build_settings_panel import BuildSettingsPanel
     from .viewport_utils import ViewportInfo, capture_viewport_info

@@ -15,12 +15,10 @@ from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.ui.window_manager import WindowManager
 from Infernux.engine.ui.editor_services import EditorServices
 from Infernux.engine.ui.event_bus import EditorEventBus
-from Infernux.engine.ui.hierarchy_panel import HierarchyPanel
+from Infernux.lib import HierarchyPanel, ConsolePanel, ProjectPanel
 from Infernux.engine.ui.inspector_panel import InspectorPanel
-from Infernux.engine.ui.console_panel import ConsolePanel
 from Infernux.engine.ui.scene_view_panel import SceneViewPanel
 from Infernux.engine.ui.game_view_panel import GameViewPanel
-from Infernux.engine.ui.project_panel import ProjectPanel
 from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
 
 
