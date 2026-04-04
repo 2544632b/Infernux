@@ -10,10 +10,12 @@ parameters, regardless of whether the effect is enabled or disabled.
 
 from __future__ import annotations
 
+import time as _time
 from typing import Dict, List, TYPE_CHECKING
 
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
+from . import inspector_support as _inspector_support
 from .inspector_utils import (
     max_label_w, field_label, render_serialized_field, has_field_changed,
     render_compact_section_header, render_info_text, render_inspector_checkbox, pretty_field_name,
@@ -29,6 +31,16 @@ if TYPE_CHECKING:
 def _undo_manager():
     from Infernux.engine.undo import UndoManager
     return UndoManager.instance()
+
+
+def _record_profile_timing(bucket: str, start_time: float) -> None:
+    _inspector_support.record_inspector_profile_timing(
+        bucket, (_time.perf_counter() - start_time) * 1000.0,
+    )
+
+
+def _record_profile_count(bucket: str, amount: float = 1.0) -> None:
+    _inspector_support.record_inspector_profile_count(bucket, amount)
 
 
 def _record_stack_field(stack: "RenderStack", target, field_name: str,
@@ -109,8 +121,10 @@ def _compute_insert_after_orders(stack: "RenderStack", dragged_name: str,
     new_orders = {name: (idx + 1) * 10 for idx, name in enumerate(ordered_names)}
     return injection_point, old_orders, new_orders
 
-def _get_pass_candidates(ip_name: str) -> Dict[str, type]:
+def _get_pass_candidates(ip_name: str, inspector_state: dict | None = None) -> Dict[str, type]:
     """Return all RenderPass classes valid for this injection point."""
+    if inspector_state is not None:
+        return inspector_state["pass_candidates_by_ip"].get(ip_name, {})
     from Infernux.renderstack.discovery import discover_passes
 
     candidates: Dict[str, type] = {}
@@ -121,14 +135,88 @@ def _get_pass_candidates(ip_name: str) -> Dict[str, type]:
     return candidates
 
 
-def _get_addable_pass_candidates(stack: "RenderStack", ip_name: str) -> Dict[str, type]:
+def _get_addable_pass_candidates(stack: "RenderStack", ip_name: str, inspector_state: dict | None = None) -> Dict[str, type]:
     """Return candidates that are not already mounted on the stack."""
+    if inspector_state is not None:
+        return inspector_state["addable_candidates_by_ip"].get(ip_name, {})
     mounted_names = {e.render_pass.name for e in stack.pass_entries}
     return {
         name: cls
-        for name, cls in _get_pass_candidates(ip_name).items()
+        for name, cls in _get_pass_candidates(ip_name, inspector_state).items()
         if name not in mounted_names
     }
+
+
+def _get_renderstack_inspector_state(stack: "RenderStack") -> dict:
+    state = getattr(stack, "_inspector_renderstack_cache", None)
+
+    state_t0 = _time.perf_counter()
+    pipelines = stack.discover_pipelines()
+    pipeline_signature = tuple(sorted(pipelines.keys()))
+
+    from Infernux.renderstack.discovery import discover_passes
+    passes = discover_passes()
+    pass_signature = tuple(sorted(passes.keys()))
+
+    topology_probe = stack._build_full_topology_probe()
+    topology_token = id(topology_probe)
+    mounted_signature = tuple(
+        (entry.render_pass.injection_point, entry.render_pass.name, entry.order, bool(entry.enabled))
+        for entry in stack.pass_entries
+    )
+
+    if (
+        isinstance(state, dict)
+        and state.get("pipeline_signature") == pipeline_signature
+        and state.get("pass_signature") == pass_signature
+        and state.get("topology_token") == topology_token
+        and state.get("mounted_signature") == mounted_signature
+    ):
+        _record_profile_count("renderstackStateHit_count")
+        return state
+
+    _record_profile_count("renderstackStateMiss_count")
+
+    pass_candidates_by_ip: dict[str, dict[str, type]] = {}
+    for name, cls in passes.items():
+        ip_name = getattr(cls, "injection_point", "") or ""
+        if not ip_name:
+            continue
+        pass_candidates_by_ip.setdefault(ip_name, {})[name] = cls
+
+    mounted_names = {entry.render_pass.name for entry in stack.pass_entries}
+    addable_candidates_by_ip = {
+        ip_name: {
+            name: cls
+            for name, cls in candidates.items()
+            if name not in mounted_names
+        }
+        for ip_name, candidates in pass_candidates_by_ip.items()
+    }
+
+    ip_entries: dict[str, list] = {}
+    for entry in stack.pass_entries:
+        ip_entries.setdefault(entry.render_pass.injection_point, []).append(entry)
+    for entries in ip_entries.values():
+        entries.sort(key=lambda entry: entry.order)
+
+    state = {
+        "pipeline_signature": pipeline_signature,
+        "pass_signature": pass_signature,
+        "topology_token": topology_token,
+        "mounted_signature": mounted_signature,
+        "pipeline_names": ["Default Forward"] + sorted(
+            name for name in pipelines if name != "Default Forward"
+        ),
+        "topology_probe": topology_probe,
+        "display_to_name": {ip.display_name: ip.name for ip in topology_probe.injection_points},
+        "pass_candidates_by_ip": pass_candidates_by_ip,
+        "addable_candidates_by_ip": addable_candidates_by_ip,
+        "ip_entries": ip_entries,
+    }
+    stack._inspector_renderstack_cache = state
+    _record_profile_timing("renderstackStateBuild", state_t0)
+    return state
 
 
 def _render_pass_bar(ctx: InxGUIContext, label: str, uid: int) -> None:
@@ -155,23 +243,29 @@ def _render_pass_bar(ctx: InxGUIContext, label: str, uid: int) -> None:
 
 
 def render_renderstack_inspector(ctx: InxGUIContext, stack: "RenderStack") -> None:
+    inspector_state = _get_renderstack_inspector_state(stack)
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
-    _render_pipeline(ctx, stack)
+    section_t0 = _time.perf_counter()
+    _render_pipeline(ctx, stack, inspector_state)
+    _record_profile_timing("renderstackPipeline", section_t0)
+    section_t0 = _time.perf_counter()
     _render_pipeline_params(ctx, stack)
+    _record_profile_timing("renderstackPipelineParams", section_t0)
     ctx.separator()
-    _render_topology_with_effects(ctx, stack)
+    section_t0 = _time.perf_counter()
+    _render_topology_with_effects(ctx, stack, inspector_state)
+    _record_profile_timing("renderstackTopology", section_t0)
     ctx.pop_style_var(2)
 
 
 # -- Pipeline selector ---------------------------------------------------
 
-def _render_pipeline(ctx: InxGUIContext, stack: "RenderStack") -> None:
+def _render_pipeline(ctx: InxGUIContext, stack: "RenderStack", inspector_state: dict | None = None) -> None:
     lw = max_label_w(ctx, [t("renderstack.pipeline")])
-    pipelines = stack.discover_pipelines()
-    names = ["Default Forward"] + sorted(
-        n for n in pipelines if n != "Default Forward"
-    )
+    names = inspector_state["pipeline_names"] if inspector_state is not None else [
+        "Default Forward"
+    ] + sorted(n for n in stack.discover_pipelines() if n != "Default Forward")
     cur = stack.pipeline_class_name or "Default Forward"
     if cur not in names:
         stack.set_pipeline("")
@@ -261,14 +355,14 @@ def _render_pipeline_params(ctx: InxGUIContext, stack: "RenderStack") -> None:
 # Topology + Effects (main section)
 # =====================================================================
 
-def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack") -> None:
+def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack", inspector_state: dict | None = None) -> None:
     """Render topology sequence as thin coloured bars.
 
     Each injection point gets a [+] button that opens a popup for adding
     effects.  Mounted effects appear as collapsible sections below the
     injection point, with parameters and enable/disable toggle.
     """
-    g = stack._build_full_topology_probe()
+    g = inspector_state["topology_probe"] if inspector_state is not None else stack._build_full_topology_probe()
     seq = g.topology_sequence
 
     if not seq:
@@ -278,19 +372,19 @@ def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack") -> N
         return
 
     # Build mounted-effects lookup: injection_point → [PassEntry] sorted by order
-    entries = stack.pass_entries
-    ip_entries: Dict[str, List] = {}
-    for e in entries:
-        ip = e.render_pass.injection_point
-        ip_entries.setdefault(ip, []).append(e)
-    for ip in ip_entries:
-        ip_entries[ip].sort(key=lambda e: e.order)
+    ip_entries = inspector_state["ip_entries"] if inspector_state is not None else {}
+    if inspector_state is None:
+        entries = stack.pass_entries
+        for e in entries:
+            ip = e.render_pass.injection_point
+            ip_entries.setdefault(ip, []).append(e)
+        for ip in ip_entries:
+            ip_entries[ip].sort(key=lambda e: e.order)
 
     # Map display labels back to injection point names
-    ip_list = g.injection_points
-    display_to_name = {}
-    for ip in ip_list:
-        display_to_name[ip.display_name] = ip.name
+    display_to_name = inspector_state["display_to_name"] if inspector_state is not None else {
+        ip.display_name: ip.name for ip in g.injection_points
+    }
 
     # Reduce vertical spacing between bars
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_SUBITEM_SPC)
@@ -302,7 +396,7 @@ def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack") -> N
         _uid_counter += 1
         if kind == "ip":
             ip_name = display_to_name.get(label, label)
-            _render_injection_point_row(ctx, stack, ip_name, label, _uid_counter, ip_entries.get(ip_name, []))
+            _render_injection_point_row(ctx, stack, ip_name, label, _uid_counter, ip_entries.get(ip_name, []), inspector_state)
         else:
             # Regular pipeline pass — thin bar
             _render_pass_bar(ctx, label, _uid_counter)
@@ -317,10 +411,11 @@ def _render_injection_point_row(
     display_label: str,
     uid: int,
     mounted: List,
+    inspector_state: dict | None = None,
 ) -> None:
     """Render an injection point as a collapsible bar."""
     popup_id = f"Popup_{uid}_{ip_name}"
-    has_addable_passes = bool(_get_addable_pass_candidates(stack, ip_name))
+    has_addable_passes = bool(_get_addable_pass_candidates(stack, ip_name, inspector_state))
     formatted_label = format_display_name(display_label)
 
     header_open = render_compact_section_header(
@@ -373,7 +468,7 @@ def _render_injection_point_row(
 
         # Popup for adding passes
         if ctx.begin_popup(popup_id):
-            _render_add_pass_popup(ctx, stack, ip_name, uid)
+            _render_add_pass_popup(ctx, stack, ip_name, uid, inspector_state)
             ctx.end_popup()
 
 
@@ -382,6 +477,7 @@ def _render_add_pass_popup(
     stack: "RenderStack",
     ip_name: str,
     uid: int,
+    inspector_state: dict | None = None,
 ) -> None:
     """Render the categorised pass-selection popup.
 
@@ -393,7 +489,7 @@ def _render_add_pass_popup(
     from Infernux.renderstack.fullscreen_effect import FullScreenEffect
     from Infernux.renderstack.geometry_pass import GeometryPass
 
-    candidates = _get_pass_candidates(ip_name)
+    candidates = _get_pass_candidates(ip_name, inspector_state)
 
     if not candidates:
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)

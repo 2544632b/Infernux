@@ -1340,6 +1340,10 @@ class SceneRenderGraph:
 # =============================================================================
 
 
+class PropertyBatchPlan:
+    size: int
+
+
 class InxGUIContext:
     """ImGui context for building editor panels and tool windows."""
 
@@ -1567,6 +1571,19 @@ class InxGUIContext:
     # Viewport bounds
     def get_main_viewport_bounds(self) -> Tuple[float, float, float, float]: ...
     def get_display_bounds(self) -> Tuple[float, float, float, float]: ...
+
+    # Inspector batch helpers
+    def render_transform_fields(
+        self,
+        px: float, py: float, pz: float,
+        rx: float, ry: float, rz: float,
+        sx: float, sy: float, sz: float,
+        speed_pos: float, speed_rot: float, speed_scl: float,
+        label_width: float,
+    ) -> Tuple[float, float, float, float, float, float, float, float, float]: ...
+    def create_property_batch_plan(self, descriptors: List[dict]) -> PropertyBatchPlan: ...
+    def render_property_batch(self, descriptors: List[dict], label_width: float) -> Dict[int, object]: ...
+    def render_property_batch_plan(self, plan: PropertyBatchPlan, label_width: float) -> Dict[int, object]: ...
 
     # Clipboard
     def set_clipboard_text(self, text: str) -> None: ...

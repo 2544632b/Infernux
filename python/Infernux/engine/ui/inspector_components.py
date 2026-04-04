@@ -12,10 +12,12 @@ serialize→edit→deserialize renderer.  To provide a custom renderer, call
 
 import json
 import math
+import time as _time
 from dataclasses import replace
 from Infernux.components.component import InxComponent
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
+from . import inspector_support as _inspector_support
 from .inspector_utils import (
     max_label_w, field_label, render_serialized_field, has_field_changed,
     render_compact_section_header, render_info_text, render_component_header,
@@ -197,6 +199,236 @@ def _record_add_component_compound(obj, type_name: str, comp_ref,
 _COMPONENT_RENDERERS: dict = {}   # type_name -> render_fn(ctx, comp)
 _PY_COMPONENT_RENDERERS: dict = {}  # type_name -> render_fn(ctx, py_comp)
 _COMPONENT_EXTRA_RENDERERS: dict = {}  # type_name -> render_fn(ctx, comp) appended after generic
+_COMPONENT_VALUE_CACHE: dict = {}
+_COMPONENT_VALUE_CACHE_TTL_S = 0.20
+_COMPONENT_VALUE_CACHE_MAX = 1024
+
+
+def _get_component_cache_id(comp) -> int:
+    return getattr(comp, 'component_id', None) or id(comp)
+
+
+def _begin_component_value_cache(kind: str, comp):
+    """Return (cache_entry, refresh_values) for a component scalar-value cache."""
+    in_play = _is_in_play_mode()
+
+    key = (kind, _get_component_cache_id(comp))
+    now = _time.monotonic()
+    entry = _COMPONENT_VALUE_CACHE.get(key)
+    missing = entry is None
+
+    if in_play:
+        # In play mode the undo system doesn't fire so generation never bumps.
+        # Rely solely on TTL-based expiry – values refresh ~5 times/sec,
+        # and the builtin plan is reused between refreshes.
+        generation = entry.get("generation", -1) if entry else -1
+        generation_changed = False
+    else:
+        generation = _inspector_support.get_inspector_value_generation()
+        generation_changed = False if missing else entry.get("generation") != generation
+
+    ttl_expired = False if missing else (now - entry.get("refreshed_at", 0.0)) >= _COMPONENT_VALUE_CACHE_TTL_S
+    refresh_values = missing or generation_changed or ttl_expired
+    if refresh_values:
+        if missing:
+            _record_profile_count(f"{kind}Cache_missMissing_count")
+        if generation_changed:
+            _record_profile_count(f"{kind}Cache_missGeneration_count")
+        if ttl_expired:
+            _record_profile_count(f"{kind}Cache_missTtl_count")
+        entry = {
+            "generation": generation,
+            "refreshed_at": now,
+            "values": {},
+        }
+        if len(_COMPONENT_VALUE_CACHE) >= _COMPONENT_VALUE_CACHE_MAX:
+            _COMPONENT_VALUE_CACHE.clear()
+        _COMPONENT_VALUE_CACHE[key] = entry
+    else:
+        _record_profile_count(f"{kind}Cache_hit_count")
+    return entry, refresh_values
+
+
+def _get_cached_component_value(cache_entry, refresh_values: bool, field_key, getter):
+    values = cache_entry["values"]
+    if refresh_values or field_key not in values:
+        values[field_key] = getter()
+    return values[field_key]
+
+
+def _invalidate_component_value_cache(cache_entry) -> None:
+    cache_entry["generation"] = _inspector_support.get_inspector_value_generation()
+    cache_entry["refreshed_at"] = _time.monotonic()
+    cache_entry["values"] = {}
+
+
+def _invalidate_component_render_cache(cache_entry) -> None:
+    _invalidate_component_value_cache(cache_entry)
+    cache_entry.pop("builtin_plan", None)
+    cache_entry.pop("py_plan", None)
+
+
+def _record_profile_timing(bucket: str, start_time: float) -> None:
+    _inspector_support.record_inspector_profile_timing(
+        bucket, (_time.perf_counter() - start_time) * 1000.0,
+    )
+
+
+def _record_profile_count(bucket: str, amount: float = 1.0) -> None:
+    _inspector_support.record_inspector_profile_count(bucket, amount)
+
+
+def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields, cache_entry, refresh_values):
+    """Build a cached render plan for a BuiltinComponent inspector body."""
+    from Infernux.components.serialized_field import FieldType
+
+    ops = []
+    batch_descs = []
+    batch_info = []
+
+    def _flush_batch():
+        nonlocal batch_descs, batch_info
+        if not batch_descs:
+            return
+        ops.append({
+            "kind": "batch",
+            "plan": ctx.create_property_batch_plan(batch_descs),
+            "info": batch_info,
+        })
+        batch_descs = []
+        batch_info = []
+
+    for py_name, cpp_prop in props:
+        if skip_fields and py_name in skip_fields:
+            continue
+
+        meta = cpp_prop.metadata
+        cpp_attr = cpp_prop.cpp_attr
+
+        if meta.visible_when is not None:
+            try:
+                if not meta.visible_when(comp):
+                    continue
+            except (RuntimeError, TypeError):
+                pass
+
+        current = _get_cached_component_value(
+            cache_entry, refresh_values, cpp_attr,
+            lambda _attr=cpp_attr: getattr(comp, _attr),
+        )
+
+        if meta.readonly:
+            _flush_batch()
+            ops.append({
+                "kind": "readonly",
+                "py_name": py_name,
+                "current": current,
+            })
+            continue
+
+        if meta.field_type == FieldType.ASSET and cpp_attr == "clip":
+            _flush_batch()
+            display_name = "None"
+            if current is not None and hasattr(current, "name"):
+                try:
+                    display_name = current.name or "None"
+                except (RuntimeError, AttributeError):
+                    display_name = "None"
+            ops.append({
+                "kind": "asset_clip",
+                "py_name": py_name,
+                "cpp_attr": cpp_attr,
+                "display_name": display_name,
+            })
+            continue
+
+        hdr = meta.header or ""
+        spc = meta.space if meta.space and meta.space > 0 else 0.0
+        desc = build_scalar_desc(
+            f"##{py_name}", pretty_field_name(py_name), meta, current,
+            header_text=hdr, space_before=spc,
+        )
+        if desc is not None:
+            enum_members = None
+            if meta.field_type == FieldType.ENUM:
+                enum_cls = meta.enum_type
+                if isinstance(enum_cls, str):
+                    import Infernux.lib as _lib
+                    enum_cls = getattr(_lib, enum_cls, None)
+                if enum_cls is not None:
+                    enum_members = _get_enum_members(enum_cls)
+            batch_descs.append(desc)
+            batch_info.append((py_name, cpp_attr, meta, current, enum_members))
+            continue
+
+        _flush_batch()
+        ops.append({
+            "kind": "fallback_scalar",
+            "py_name": py_name,
+            "cpp_attr": cpp_attr,
+            "meta": meta,
+            "current": current,
+            "header": hdr,
+            "space": spc,
+        })
+
+    _flush_batch()
+    return {
+        "lw": lw,
+        "skip_fields": tuple(sorted(skip_fields)) if skip_fields else (),
+        "ops": ops,
+    }
+
+
+def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entry) -> bool:
+    """Replay a cached BuiltinComponent render plan. Returns True if edited."""
+    lw = plan["lw"]
+    edited = False
+
+    for op in plan["ops"]:
+        kind = op["kind"]
+
+        if kind == "batch":
+            changes = ctx.render_property_batch_plan(op["plan"], lw)
+            if changes:
+                _apply_batch_changes_builtin(comp, changes, op["info"])
+                edited = True
+            continue
+
+        if kind == "readonly":
+            ctx.label(f"{op['py_name']}: {op['current']}")
+            continue
+
+        if kind == "asset_clip":
+            field_label(ctx, pretty_field_name(op["py_name"]), lw)
+            render_object_field(
+                ctx,
+                f"audio_clip_{op['py_name']}",
+                op["display_name"],
+                "AudioClip",
+                accept_drag_type="AUDIO_FILE",
+                on_drop_callback=lambda payload, _comp=comp, _attr=op["cpp_attr"]: _apply_builtin_audio_clip_drop(_comp, _attr, payload),
+            )
+            continue
+
+        if kind == "fallback_scalar":
+            if op["header"]:
+                ctx.separator()
+                ctx.label(op["header"])
+            if op["space"] > 0:
+                ctx.dummy(0, op["space"])
+            new_value = render_serialized_field(
+                ctx, f"##{op['py_name']}", pretty_field_name(op["py_name"]),
+                op["meta"], op["current"], lw,
+            )
+            if has_field_changed(op["meta"].field_type, op["current"], new_value):
+                _record_builtin_property(comp, op["cpp_attr"], op["current"], new_value,
+                                         f"Set {op['py_name']}")
+                edited = True
+
+    if edited:
+        _invalidate_component_render_cache(cache_entry)
+    return edited
 
 
 def register_component_renderer(type_name: str, render_fn):
@@ -245,7 +477,12 @@ def render_component(ctx: InxGUIContext, comp):
     # 1. Central full-replacement renderers (e.g. Transform)
     renderer = _COMPONENT_RENDERERS.get(comp.type_name)
     if renderer:
-        renderer(ctx, comp)
+        _record_profile_count("bodyNativeCustom_count")
+        _t0 = _time.perf_counter()
+        try:
+            renderer(ctx, comp)
+        finally:
+            _record_profile_timing("bodyNativeCustom", _t0)
         return
 
     # 2. BuiltinComponent wrapper — delegate to render_inspector()
@@ -257,11 +494,21 @@ def render_component(ctx: InxGUIContext, comp):
             if not isinstance(comp, BuiltinComponent):
                 go = getattr(comp, 'game_object', None)
                 if go is not None:
+                    _wrap_t0 = _time.perf_counter()
                     comp = wrapper_cls._get_or_create_wrapper(comp, go)
+                    _record_profile_timing("bodyBuiltinWrap", _wrap_t0)
                 else:
+                    _record_profile_count("bodyCppGeneric_count")
+                    _generic_t0 = _time.perf_counter()
                     render_cpp_component_generic(ctx, raw_cpp)
+                    _record_profile_timing("bodyCppGeneric", _generic_t0)
                     return
-            comp.render_inspector(ctx)
+            _record_profile_count("bodyBuiltinTotal_count")
+            _builtin_t0 = _time.perf_counter()
+            try:
+                comp.render_inspector(ctx)
+            finally:
+                _record_profile_timing("bodyBuiltinTotal", _builtin_t0)
         except Exception as exc:
             import traceback
             from Infernux.debug import Debug
@@ -271,7 +518,10 @@ def render_component(ctx: InxGUIContext, comp):
                 f"{getattr(raw_cpp, 'type_name', '?')}: {exc}\n{tb_str}"
             )
             try:
+                _record_profile_count("bodyCppGeneric_count")
+                _generic_t0 = _time.perf_counter()
                 render_cpp_component_generic(ctx, raw_cpp)
+                _record_profile_timing("bodyCppGeneric", _generic_t0)
             except Exception as fallback_exc:
                 Debug.log_warning(
                     f"[Inspector] fallback also failed for "
@@ -280,7 +530,10 @@ def render_component(ctx: InxGUIContext, comp):
         return
 
     # 3. Fallback — generic property table
+    _record_profile_count("bodyCppGeneric_count")
+    _generic_t0 = _time.perf_counter()
     render_cpp_component_generic(ctx, comp)
+    _record_profile_timing("bodyCppGeneric", _generic_t0)
 
 
 # ============================================================================
@@ -382,111 +635,34 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
 
     labels = [pretty_field_name(name) for name, _ in props]
     lw = max_label_w(ctx, labels)
-
-    # ── Batch-rendering state ──
-    batch_descs = []  # list of descriptor dicts for C++
-    batch_info = []   # parallel: (py_name, cpp_attr, metadata, current_value, enum_members)
-
-    def _flush_batch():
-        nonlocal batch_descs, batch_info
-        if not batch_descs:
-            return
-        changes = ctx.render_property_batch(batch_descs, lw)
-        if changes:
-            _apply_batch_changes_builtin(comp, changes, batch_info)
-        batch_descs = []
-        batch_info = []
-
-    for py_name, cpp_prop in props:
-        if skip_fields and py_name in skip_fields:
-            continue
-
-        meta = cpp_prop.metadata  # FieldMetadata
-        cpp_attr = cpp_prop.cpp_attr
-
-        # Conditional visibility
-        if meta.visible_when is not None:
-            try:
-                if not meta.visible_when(comp):
-                    continue
-            except (RuntimeError, TypeError):
-                pass  # On error, show the field
-
-        # Read current value from C++ component
-        current = getattr(comp, cpp_attr)
-
-        # Read-only fields: render as label and skip editing
-        if meta.readonly:
-            _flush_batch()
-            ctx.label(f"{py_name}: {current}")
-            continue
-
-        # ----- ASSET (AudioClip for built-in AudioSource.clip) -----
-        if meta.field_type == FieldType.ASSET and cpp_attr == "clip":
-            _flush_batch()
-            display_name = "None"
-            if current is not None and hasattr(current, "name"):
-                try:
-                    display_name = current.name or "None"
-                except (RuntimeError, AttributeError):
-                    display_name = "None"
-
-            field_label(ctx, pretty_field_name(py_name), lw)
-            render_object_field(
-                ctx,
-                f"audio_clip_{py_name}",
-                display_name,
-                "AudioClip",
-                accept_drag_type="AUDIO_FILE",
-                on_drop_callback=lambda payload, _comp=comp, _attr=cpp_attr: _apply_builtin_audio_clip_drop(_comp, _attr, payload),
-            )
-            continue
-
-        # ----- Scalar field → try batch -----
-        hdr = ""
-        spc = 0.0
-        if meta.header:
-            hdr = meta.header
-        if meta.space and meta.space > 0:
-            spc = meta.space
-
-        desc = build_scalar_desc(
-            f"##{py_name}", pretty_field_name(py_name), meta, current,
-            header_text=hdr, space_before=spc,
-        )
-        if desc is not None:
-            # Track enum members for index→member conversion on change
-            enum_members = None
-            if meta.field_type == FieldType.ENUM:
-                enum_cls = meta.enum_type
-                if isinstance(enum_cls, str):
-                    import Infernux.lib as _lib
-                    enum_cls = getattr(_lib, enum_cls, None)
-                if enum_cls is not None:
-                    enum_members = _get_enum_members(enum_cls)
-            batch_descs.append(desc)
-            batch_info.append((py_name, cpp_attr, meta, current, enum_members))
+    cache_entry, refresh_values = _begin_component_value_cache("builtin", comp)
+    skip_key = tuple(sorted(skip_fields)) if skip_fields else ()
+    plan = None if refresh_values else cache_entry.get("builtin_plan")
+    if plan is None or plan.get("skip_fields") != skip_key:
+        if plan is None:
+            _record_profile_count("bodyBuiltinPlanMiss_count")
         else:
-            # Non-batchable → flush + fallback to per-field render
-            _flush_batch()
-            if hdr:
-                ctx.separator()
-                ctx.label(hdr)
-            if spc > 0:
-                ctx.dummy(0, spc)
-            new_value = render_serialized_field(
-                ctx, f"##{py_name}", pretty_field_name(py_name), meta, current, lw,
-            )
-            if has_field_changed(meta.field_type, current, new_value):
-                _record_builtin_property(comp, cpp_attr, current, new_value,
-                                         f"Set {py_name}")
+            _record_profile_count("bodyBuiltinPlanSkipMismatch_count")
+        _record_profile_count("bodyBuiltinPlanBuild_count")
+        _plan_t0 = _time.perf_counter()
+        plan = _build_builtin_cached_plan(ctx, comp, props, lw, skip_fields, cache_entry, refresh_values)
+        _record_profile_timing("bodyBuiltinPlanBuild", _plan_t0)
+        cache_entry["builtin_plan"] = plan
+    else:
+        _record_profile_count("bodyBuiltinPlanHit_count")
 
-    _flush_batch()
+    _record_profile_count("bodyBuiltinPlanReplay_count")
+    _replay_t0 = _time.perf_counter()
+    _replay_builtin_cached_plan(ctx, comp, plan, cache_entry)
+    _record_profile_timing("bodyBuiltinPlanReplay", _replay_t0)
 
     # Append extra renderer if registered (e.g. AudioSource per-track section)
     extra = _COMPONENT_EXTRA_RENDERERS.get(getattr(comp, 'type_name', ''))
     if extra:
+        _record_profile_count("bodyBuiltinExtra_count")
+        _extra_t0 = _time.perf_counter()
         extra(ctx, comp)
+        _record_profile_timing("bodyBuiltinExtra", _extra_t0)
 
 
 def _record_builtin_property(comp, cpp_attr: str, old_value, new_value,
@@ -1299,24 +1475,37 @@ def render_py_component(ctx: InxGUIContext, py_comp):
     """
     renderer = _PY_COMPONENT_RENDERERS.get(py_comp.type_name)
     if renderer:
-        renderer(ctx, py_comp)
+        _record_profile_count("bodyPyCustom_count")
+        _py_custom_t0 = _time.perf_counter()
+        try:
+            renderer(ctx, py_comp)
+        finally:
+            _record_profile_timing("bodyPyCustom", _py_custom_t0)
         return
     from Infernux.components.serialized_field import get_serialized_fields, FieldType
 
     fields = get_serialized_fields(py_comp.__class__)
     lw = max_label_w(ctx, [pretty_field_name(k) for k in fields]) if fields else 0.0
+    cache_entry, refresh_values = _begin_component_value_cache("py", py_comp)
+    _record_profile_count("bodyPyGenericTotal_count")
+    _py_generic_t0 = _time.perf_counter()
 
     # ── Batch rendering state ──
     batch_descs = []   # list of descriptor dicts for C++
     batch_info = []    # parallel: (field_name, metadata, current_value, enum_members)
 
     def _flush():
-        nonlocal batch_descs, batch_info
+        nonlocal batch_descs, batch_info, refresh_values
         if not batch_descs:
             return
+        _record_profile_count("bodyPyGenericBatch_count")
+        _batch_t0 = _time.perf_counter()
         changes = ctx.render_property_batch(batch_descs, lw)
+        _record_profile_timing("bodyPyGenericBatch", _batch_t0)
         if changes:
             _apply_batch_changes_py(py_comp, changes, batch_info)
+            _invalidate_component_value_cache(cache_entry)
+            refresh_values = True
         batch_descs = []
         batch_info = []
 
@@ -1357,7 +1546,10 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 from Infernux.components.serialized_field import get_raw_field_value
                 current_value = get_raw_field_value(py_comp, field_name)
             else:
-                current_value = getattr(py_comp, field_name, metadata.default)
+                current_value = _get_cached_component_value(
+                    cache_entry, refresh_values, field_name,
+                    lambda _fn=field_name, _default=metadata.default: getattr(py_comp, _fn, _default),
+                )
         except RuntimeError:
             current_value = metadata.default
 
@@ -1518,6 +1710,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 _record_property(py_comp, field_name, current_value, new_value, f"Set {field_name}")
                 if hasattr(py_comp, '_call_on_validate'):
                     py_comp._call_on_validate()
+                _invalidate_component_value_cache(cache_entry)
+                refresh_values = True
 
         # Show tooltip if available
         if metadata.tooltip and ctx.is_item_hovered():
@@ -1528,6 +1722,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             _render_info_text(ctx, metadata.info_text)
 
     _flush()
+    _record_profile_timing("bodyPyGenericTotal", _py_generic_t0)
 def _apply_reference_drop(field_type, comp, field_name: str, payload, required_component: str = None):
     """Generic handler for reference-type drag-drop onto a field.
 

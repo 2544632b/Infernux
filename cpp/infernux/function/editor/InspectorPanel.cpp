@@ -35,6 +35,12 @@ std::unordered_map<std::string, double> InspectorPanel::ConsumeSubTimings()
     out["compList"] = m_subGetComponents;
     out["compBody"] = m_subComponentBodies;
     out["material"] = m_subMaterials;
+    if (consumeComponentBodyProfile)
+    {
+        auto bodyMetrics = consumeComponentBodyProfile();
+        for (const auto &kv : bodyMetrics)
+            out[kv.first] += kv.second;
+    }
     m_subGetInfo = 0.0;
     m_subTransform = 0.0;
     m_subGetComponents = 0.0;
@@ -70,6 +76,10 @@ void InspectorPanel::SetSelectedObjectId(uint64_t id)
     if (m_selectedObjectId != id)
     {
         m_cachedObjInfoId = 0; // invalidate cache
+        m_cachedComponentListObjId = 0;
+        m_cachedComponents.clear();
+        m_cachedValueGeneration = 0;
+        m_cachedValueRefreshTime = 0.0f;
     }
     m_selectedObjectId = id;
     if (id != 0)
@@ -84,6 +94,10 @@ void InspectorPanel::ClearSelectedObject()
 {
     m_selectedObjectId = 0;
     m_cachedObjInfoId = 0;
+    m_cachedComponentListObjId = 0;
+    m_cachedComponents.clear();
+    m_cachedValueGeneration = 0;
+    m_cachedValueRefreshTime = 0.0f;
     m_mode = InspectorMode::Object;
 }
 
@@ -93,6 +107,10 @@ void InspectorPanel::SetSelectedFile(const std::string &filePath, const std::str
     {
         m_selectedFile = filePath;
         m_cachedObjInfoId = 0;
+        m_cachedComponentListObjId = 0;
+        m_cachedComponents.clear();
+        m_cachedValueGeneration = 0;
+        m_cachedValueRefreshTime = 0.0f;
     }
     if (!filePath.empty())
     {
@@ -112,6 +130,8 @@ void InspectorPanel::ClearSelectedFile()
 {
     m_selectedFile.clear();
     m_assetCategory.clear();
+    m_cachedValueGeneration = 0;
+    m_cachedValueRefreshTime = 0.0f;
     m_mode = InspectorMode::Object;
 }
 
@@ -342,16 +362,28 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 {
     using clock = std::chrono::high_resolution_clock;
 
+    uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
+    bool refreshSnapshots = (m_cachedObjInfoId != objId) ||
+                            (m_cachedComponentListObjId != objId) ||
+                            (m_idleFrames <= 0) ||
+                            (valueGeneration != m_cachedValueGeneration) ||
+                            ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
+
     // ── Sub-timing: getObjectInfo + getPrefabInfo ────────────────────
     auto t0 = clock::now();
 
-    if (getObjectInfo)
-        m_cachedObjInfo = getObjectInfo(objId);
-    m_cachedObjInfoId = objId;
-    if (!m_cachedObjInfo.prefabGuid.empty() && getPrefabInfo)
-        m_cachedPrefabInfo = getPrefabInfo(objId);
-    else
-        m_cachedPrefabInfo = {};
+    if (refreshSnapshots)
+    {
+        if (getObjectInfo)
+            m_cachedObjInfo = getObjectInfo(objId);
+        else
+            m_cachedObjInfo = {};
+        m_cachedObjInfoId = objId;
+        if (!m_cachedObjInfo.prefabGuid.empty() && getPrefabInfo)
+            m_cachedPrefabInfo = getPrefabInfo(objId);
+        else
+            m_cachedPrefabInfo = {};
+    }
 
     auto t1 = clock::now();
     m_subGetInfo += std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -415,10 +447,18 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     // ── Sub-timing: getComponentList ─────────────────────────────────
     auto t4 = clock::now();
 
-    // Get component list via callback
-    std::vector<ComponentInfo> components;
-    if (getComponentList)
-        components = getComponentList(objId);
+    if (refreshSnapshots)
+    {
+        if (getComponentList)
+            m_cachedComponents = getComponentList(objId);
+        else
+            m_cachedComponents.clear();
+        m_cachedComponentListObjId = objId;
+        m_cachedValueGeneration = valueGeneration;
+        m_cachedValueRefreshTime = m_frameTimeNow;
+    }
+
+    const auto &components = m_cachedComponents;
 
     auto t5 = clock::now();
     m_subGetComponents += std::chrono::duration<double, std::milli>(t5 - t4).count();

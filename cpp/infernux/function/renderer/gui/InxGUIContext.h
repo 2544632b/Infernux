@@ -56,6 +56,11 @@ struct PropertyChange
     std::string sVal;
 };
 
+struct PropertyBatchPlan
+{
+    std::vector<PropertyDesc> descriptors;
+};
+
 class InxGUIContext
 {
   public:

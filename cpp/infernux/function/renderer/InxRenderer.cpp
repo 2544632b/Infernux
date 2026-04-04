@@ -946,9 +946,21 @@ void InxRenderer::DrawFrame()
 
             // Inspector sub-timing breakdown
             if (!_inspSubAccum.empty()) {
+                std::vector<std::pair<std::string, double>> inspItems(_inspSubAccum.begin(), _inspSubAccum.end());
+                std::sort(inspItems.begin(), inspItems.end(), [](const auto &lhs, const auto &rhs) {
+                    return lhs.first < rhs.first;
+                });
+                auto isCountMetric = [](const std::string &key) {
+                    constexpr char kSuffix[] = "_count";
+                    return key.size() >= (sizeof(kSuffix) - 1) &&
+                           key.compare(key.size() - (sizeof(kSuffix) - 1), sizeof(kSuffix) - 1, kSuffix) == 0;
+                };
                 oss << "\n    Inspector:";
-                for (const auto &kv : _inspSubAccum)
-                    oss << ' ' << kv.first << '=' << (kv.second / kWindow) << "ms";
+                for (const auto &kv : inspItems) {
+                    oss << ' ' << kv.first << '=' << (kv.second / kWindow);
+                    if (!isCountMetric(kv.first))
+                        oss << "ms";
+                }
             }
             INXLOG_WARN(oss.str());
 #if INFERNUX_FRAME_PROFILE_TERMINAL

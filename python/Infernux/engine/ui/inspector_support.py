@@ -119,6 +119,8 @@ def prepare_component_icon_pixels(tex_data) -> tuple[list[int], int, int]:
 
 _component_structure_version = 0
 _component_tracker_reset_version = 0
+_inspector_value_generation = 1
+_inspector_profile_metrics: dict[str, float] = {}
 
 
 def bump_component_structure_version() -> None:
@@ -131,6 +133,46 @@ def bump_component_structure_version() -> None:
 def get_component_structure_version() -> int:
     """Return the current component structure version for cache invalidation."""
     return _component_structure_version
+
+
+def bump_inspector_value_generation() -> int:
+    """Increment and return the coarse inspector value generation.
+
+    This is used by the native Inspector and Python field renderers to reuse
+    cached values until something in the editor mutates inspected data.
+    """
+    global _inspector_value_generation
+    _inspector_value_generation += 1
+    return _inspector_value_generation
+
+
+def get_inspector_value_generation() -> int:
+    """Return the current coarse inspector value generation."""
+    return _inspector_value_generation
+
+
+def record_inspector_profile_timing(bucket: str, elapsed_ms: float) -> None:
+    """Accumulate an Inspector profile timing bucket in milliseconds."""
+    if not bucket or elapsed_ms <= 0.0:
+        return
+    _inspector_profile_metrics[bucket] = _inspector_profile_metrics.get(bucket, 0.0) + float(elapsed_ms)
+
+
+def record_inspector_profile_count(bucket: str, amount: float = 1.0) -> None:
+    """Accumulate a non-time Inspector profile metric, such as a call count."""
+    if not bucket or amount == 0.0:
+        return
+    _inspector_profile_metrics[bucket] = _inspector_profile_metrics.get(bucket, 0.0) + float(amount)
+
+
+def consume_inspector_profile_metrics() -> dict[str, float]:
+    """Return and reset accumulated Inspector profile metrics."""
+    global _inspector_profile_metrics
+    if not _inspector_profile_metrics:
+        return {}
+    metrics = _inspector_profile_metrics
+    _inspector_profile_metrics = {}
+    return metrics
 
 
 def ensure_material_file_path(material) -> str:
@@ -170,7 +212,12 @@ def ensure_material_file_path(material) -> str:
 
 __all__ = [
     "bump_component_structure_version",
+    "bump_inspector_value_generation",
+    "consume_inspector_profile_metrics",
     "ensure_material_file_path",
     "get_component_structure_version",
+    "get_inspector_value_generation",
     "prepare_component_icon_pixels",
+    "record_inspector_profile_count",
+    "record_inspector_profile_timing",
 ]

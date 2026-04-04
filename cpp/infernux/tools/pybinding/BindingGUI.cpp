@@ -13,6 +13,7 @@
 #include <function/editor/ProjectPanel.h>
 #include <function/editor/StatusBarPanel.h>
 #include <function/editor/ToolbarPanel.h>
+#include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -57,10 +58,130 @@ py::tuple RenderTransformFields(InxGUIContext &ctx, float px, float py, float pz
     return py::make_tuple(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], scl[0], scl[1], scl[2]);
 }
 
+PropertyDesc DecodePropertyDesc(const py::dict &d)
+{
+    PropertyDesc p;
+    p.type = static_cast<PropertyDesc::Type>(d["t"].cast<int>());
+    p.widgetId = d["w"].cast<std::string>();
+    p.label = d["n"].cast<std::string>();
+    switch (p.type)
+    {
+    case PropertyDesc::Float:
+        p.fVal[0] = d["f"].cast<float>();
+        break;
+    case PropertyDesc::Int:
+        p.iVal = d["i"].cast<int>();
+        break;
+    case PropertyDesc::Bool:
+        p.bVal = d["b"].cast<bool>();
+        break;
+    case PropertyDesc::String:
+        p.sVal = d["s"].cast<std::string>();
+        break;
+    case PropertyDesc::Vec2:
+        p.fVal[0] = d["f"].cast<float>();
+        p.fVal[1] = d["f2"].cast<float>();
+        break;
+    case PropertyDesc::Vec3:
+        p.fVal[0] = d["f"].cast<float>();
+        p.fVal[1] = d["f2"].cast<float>();
+        p.fVal[2] = d["f3"].cast<float>();
+        break;
+    case PropertyDesc::Vec4:
+        p.fVal[0] = d["f"].cast<float>();
+        p.fVal[1] = d["f2"].cast<float>();
+        p.fVal[2] = d["f3"].cast<float>();
+        p.fVal[3] = d["f4"].cast<float>();
+        break;
+    case PropertyDesc::Enum:
+        p.iVal = d["ei"].cast<int>();
+        p.enumNames = d["en"].cast<std::vector<std::string>>();
+        break;
+    case PropertyDesc::Color:
+        p.fVal[0] = d["f"].cast<float>();
+        p.fVal[1] = d["f2"].cast<float>();
+        p.fVal[2] = d["f3"].cast<float>();
+        p.fVal[3] = d["f4"].cast<float>();
+        break;
+    }
+    if (d.contains("mn"))
+        p.rangeMin = d["mn"].cast<float>();
+    if (d.contains("mx"))
+        p.rangeMax = d["mx"].cast<float>();
+    if (d.contains("sp"))
+        p.speed = d["sp"].cast<float>();
+    if (d.contains("sl"))
+        p.slider = d["sl"].cast<bool>();
+    if (d.contains("ml"))
+        p.multiline = d["ml"].cast<bool>();
+    if (d.contains("hdr"))
+        p.header = d["hdr"].cast<std::string>();
+    if (d.contains("spc"))
+        p.space = d["spc"].cast<float>();
+    return p;
+}
+
+std::vector<PropertyDesc> DecodePropertyBatch(py::list descriptors)
+{
+    std::vector<PropertyDesc> props;
+    const int n = static_cast<int>(py::len(descriptors));
+    props.reserve(n);
+    for (int i = 0; i < n; ++i)
+    {
+        props.push_back(DecodePropertyDesc(descriptors[i].cast<py::dict>()));
+    }
+    return props;
+}
+
+py::dict EncodePropertyChanges(const std::vector<PropertyChange> &changes)
+{
+    py::dict result;
+    for (const auto &c : changes)
+    {
+        py::int_ key(c.index);
+        switch (c.type)
+        {
+        case PropertyDesc::Float:
+            result[key] = py::float_(c.fVal[0]);
+            break;
+        case PropertyDesc::Int:
+            result[key] = py::int_(c.iVal);
+            break;
+        case PropertyDesc::Bool:
+            result[key] = py::bool_(c.bVal);
+            break;
+        case PropertyDesc::String:
+            result[key] = py::str(c.sVal);
+            break;
+        case PropertyDesc::Vec2:
+            result[key] = py::make_tuple(c.fVal[0], c.fVal[1]);
+            break;
+        case PropertyDesc::Vec3:
+            result[key] = py::make_tuple(c.fVal[0], c.fVal[1], c.fVal[2]);
+            break;
+        case PropertyDesc::Vec4:
+            result[key] = py::make_tuple(c.fVal[0], c.fVal[1], c.fVal[2], c.fVal[3]);
+            break;
+        case PropertyDesc::Enum:
+            result[key] = py::int_(c.iVal);
+            break;
+        case PropertyDesc::Color:
+            result[key] = py::make_tuple(c.fVal[0], c.fVal[1], c.fVal[2], c.fVal[3]);
+            break;
+        }
+    }
+    return result;
+}
+
 } // anonymous namespace
 
 void RegisterGUIBindings(py::module_ &m)
 {
+    py::class_<PropertyBatchPlan, std::shared_ptr<PropertyBatchPlan>>(m, "PropertyBatchPlan")
+        .def_property_readonly("size", [](const PropertyBatchPlan &plan) {
+            return static_cast<int>(plan.descriptors.size());
+        });
+
     py::class_<InxGUIContext>(m, "InxGUIContext")
         .def("label", &InxGUIContext::Label)
         .def("text_wrapped", &InxGUIContext::TextWrapped)
@@ -529,120 +650,32 @@ void RegisterGUIBindings(py::module_ &m)
             py::arg("px"), py::arg("py"), py::arg("pz"), py::arg("rx"), py::arg("ry"), py::arg("rz"), py::arg("sx"),
             py::arg("sy"), py::arg("sz"), py::arg("speed_pos"), py::arg("speed_rot"), py::arg("speed_scl"),
             py::arg("label_width"), "Render Position/Rotation/Scale vector3 controls in one call.")
+        .def(
+            "create_property_batch_plan",
+            [](InxGUIContext &, py::list descriptors) {
+                auto plan = std::make_shared<PropertyBatchPlan>();
+                plan->descriptors = DecodePropertyBatch(descriptors);
+                return plan;
+            },
+            py::arg("descriptors"),
+            "Compile a property descriptor list into a reusable native batch plan.")
         // ── Batch property renderer (N fields in 1 call) ───────────
         .def(
             "render_property_batch",
             [](InxGUIContext &ctx, py::list descriptors, float labelWidth) -> py::dict {
-                // Convert Python list-of-dicts to std::vector<PropertyDesc>
-                std::vector<PropertyDesc> props;
-                const int n = static_cast<int>(py::len(descriptors));
-                props.reserve(n);
-                for (int i = 0; i < n; ++i)
-                {
-                    py::dict d = descriptors[i].cast<py::dict>();
-                    PropertyDesc p;
-                    p.type = static_cast<PropertyDesc::Type>(d["t"].cast<int>());
-                    p.widgetId = d["w"].cast<std::string>();
-                    p.label = d["n"].cast<std::string>();
-                    switch (p.type)
-                    {
-                    case PropertyDesc::Float:
-                        p.fVal[0] = d["f"].cast<float>();
-                        break;
-                    case PropertyDesc::Int:
-                        p.iVal = d["i"].cast<int>();
-                        break;
-                    case PropertyDesc::Bool:
-                        p.bVal = d["b"].cast<bool>();
-                        break;
-                    case PropertyDesc::String:
-                        p.sVal = d["s"].cast<std::string>();
-                        break;
-                    case PropertyDesc::Vec2:
-                        p.fVal[0] = d["f"].cast<float>();
-                        p.fVal[1] = d["f2"].cast<float>();
-                        break;
-                    case PropertyDesc::Vec3:
-                        p.fVal[0] = d["f"].cast<float>();
-                        p.fVal[1] = d["f2"].cast<float>();
-                        p.fVal[2] = d["f3"].cast<float>();
-                        break;
-                    case PropertyDesc::Vec4:
-                        p.fVal[0] = d["f"].cast<float>();
-                        p.fVal[1] = d["f2"].cast<float>();
-                        p.fVal[2] = d["f3"].cast<float>();
-                        p.fVal[3] = d["f4"].cast<float>();
-                        break;
-                    case PropertyDesc::Enum:
-                        p.iVal = d["ei"].cast<int>();
-                        p.enumNames = d["en"].cast<std::vector<std::string>>();
-                        break;
-                    case PropertyDesc::Color:
-                        p.fVal[0] = d["f"].cast<float>();
-                        p.fVal[1] = d["f2"].cast<float>();
-                        p.fVal[2] = d["f3"].cast<float>();
-                        p.fVal[3] = d["f4"].cast<float>();
-                        break;
-                    }
-                    if (d.contains("mn"))
-                        p.rangeMin = d["mn"].cast<float>();
-                    if (d.contains("mx"))
-                        p.rangeMax = d["mx"].cast<float>();
-                    if (d.contains("sp"))
-                        p.speed = d["sp"].cast<float>();
-                    if (d.contains("sl"))
-                        p.slider = d["sl"].cast<bool>();
-                    if (d.contains("ml"))
-                        p.multiline = d["ml"].cast<bool>();
-                    if (d.contains("hdr"))
-                        p.header = d["hdr"].cast<std::string>();
-                    if (d.contains("spc"))
-                        p.space = d["spc"].cast<float>();
-                    props.push_back(std::move(p));
-                }
-
-                auto changes = ctx.RenderPropertyBatch(props, labelWidth);
-
-                // Convert changes to Python dict: {index: value}
-                py::dict result;
-                for (const auto &c : changes)
-                {
-                    py::int_ key(c.index);
-                    switch (c.type)
-                    {
-                    case PropertyDesc::Float:
-                        result[key] = py::float_(c.fVal[0]);
-                        break;
-                    case PropertyDesc::Int:
-                        result[key] = py::int_(c.iVal);
-                        break;
-                    case PropertyDesc::Bool:
-                        result[key] = py::bool_(c.bVal);
-                        break;
-                    case PropertyDesc::String:
-                        result[key] = py::str(c.sVal);
-                        break;
-                    case PropertyDesc::Vec2:
-                        result[key] = py::make_tuple(c.fVal[0], c.fVal[1]);
-                        break;
-                    case PropertyDesc::Vec3:
-                        result[key] = py::make_tuple(c.fVal[0], c.fVal[1], c.fVal[2]);
-                        break;
-                    case PropertyDesc::Vec4:
-                        result[key] = py::make_tuple(c.fVal[0], c.fVal[1], c.fVal[2], c.fVal[3]);
-                        break;
-                    case PropertyDesc::Enum:
-                        result[key] = py::int_(c.iVal);
-                        break;
-                    case PropertyDesc::Color:
-                        result[key] = py::make_tuple(c.fVal[0], c.fVal[1], c.fVal[2], c.fVal[3]);
-                        break;
-                    }
-                }
-                return result;
+                return EncodePropertyChanges(ctx.RenderPropertyBatch(DecodePropertyBatch(descriptors), labelWidth));
             },
             py::arg("descriptors"), py::arg("label_width"),
-            "Render a batch of property fields in one call. Returns {index: new_value} for changed fields.");
+            "Render a batch of property fields in one call. Returns {index: new_value} for changed fields.")
+        .def(
+            "render_property_batch_plan",
+            [](InxGUIContext &ctx, const std::shared_ptr<PropertyBatchPlan> &plan, float labelWidth) -> py::dict {
+                if (!plan)
+                    return py::dict();
+                return EncodePropertyChanges(ctx.RenderPropertyBatch(plan->descriptors, labelWidth));
+            },
+            py::arg("plan"), py::arg("label_width"),
+            "Render a reusable native property batch plan. Returns {index: new_value} for changed fields.");
 
     py::class_<InxGUIRenderable, PyGUIRenderable, std::shared_ptr<InxGUIRenderable>>(m, "InxGUIRenderable",
                                                                                      py::dynamic_attr())
@@ -991,6 +1024,7 @@ void RegisterGUIBindings(py::module_ &m)
         // Selection callbacks
         .def_readwrite("is_multi_selection", &InspectorPanel::isMultiSelection)
         .def_readwrite("get_selected_ids", &InspectorPanel::getSelectedIds)
+        .def_readwrite("get_value_generation", &InspectorPanel::getValueGeneration)
         // Object info callbacks
         .def_readwrite("get_object_info", &InspectorPanel::getObjectInfo)
         .def_readwrite("set_object_property", &InspectorPanel::setObjectProperty)
@@ -1002,6 +1036,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_component_icon_id", &InspectorPanel::getComponentIconId)
         // Component body rendering
         .def_readwrite("render_component_body", &InspectorPanel::renderComponentBody)
+        .def_readwrite("consume_component_body_profile", &InspectorPanel::consumeComponentBodyProfile)
         .def_readwrite("render_component_context_menu", &InspectorPanel::renderComponentContextMenu)
         .def_readwrite("set_component_enabled", &InspectorPanel::setComponentEnabled)
         // Add Component

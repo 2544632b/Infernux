@@ -1465,8 +1465,12 @@ class EditorBootstrap:
         """Wire C++ InspectorPanel callbacks to Python managers."""
         ip = self.inspector_panel
         engine = self.engine
+        import time as _time
         from Infernux.engine.i18n import t as _t
         from Infernux.engine.ui import inspector_support as _inspector_support
+        _bump_inspector_values = _inspector_support.bump_inspector_value_generation
+        _record_profile_count = _inspector_support.record_inspector_profile_count
+        _record_profile_timing = _inspector_support.record_inspector_profile_timing
 
         # ── Translation ────────────────────────────────────────────────
         ip.translate = _t
@@ -1476,6 +1480,8 @@ class EditorBootstrap:
 
         ip.is_multi_selection = lambda: SelectionManager.instance().is_multi()
         ip.get_selected_ids = lambda: SelectionManager.instance().get_ids()
+        ip.get_value_generation = _inspector_support.get_inspector_value_generation
+        ip.consume_component_body_profile = _inspector_support.consume_inspector_profile_metrics
 
         # ── Object info ────────────────────────────────────────────────
         from Infernux.lib import SceneManager, InspectorObjectInfo
@@ -1651,6 +1657,7 @@ class EditorBootstrap:
                                             f"Set {prop_name}"))
             else:
                 setattr(obj, prop_name, new_val)
+                _bump_inspector_values()
             # DEBUG: verify active property change took effect
             if prop_name == "active":
                 actual = getattr(obj, prop_name, None)
@@ -1696,6 +1703,7 @@ class EditorBootstrap:
             trans.local_position = Vector3(td.px, td.py_, td.pz)
             trans.local_euler_angles = Vector3(td.rx, td.ry, td.rz)
             trans.local_scale = Vector3(td.sx, td.sy, td.sz)
+            _bump_inspector_values()
 
         ip.set_transform_data = _set_transform_data
 
@@ -1760,13 +1768,21 @@ class EditorBootstrap:
         from Infernux.engine.ui import inspector_components as comp_ui
 
         def _render_component_body(ctx, obj_id, type_name, comp_id, is_native):
+            _record_profile_count("bodyResolve_count")
+            _resolve_t0 = _time.perf_counter()
             comp = _resolve_component(obj_id, comp_id, is_native)
+            _record_profile_timing("bodyResolve", (_time.perf_counter() - _resolve_t0) * 1000.0)
             if comp is None:
                 return
             if is_native:
+                _record_profile_count("bodyNativeDispatch_count")
+                _native_t0 = _time.perf_counter()
                 comp_ui.render_component(ctx, comp)
+                _record_profile_timing("bodyNativeDispatch", (_time.perf_counter() - _native_t0) * 1000.0)
                 return
             else:
+                _record_profile_count("bodyPyCheck_count")
+                _py_check_t0 = _time.perf_counter()
                 _script_err = None
                 if getattr(comp, '_is_broken', False):
                     _script_err = getattr(comp, '_broken_error', '') or 'Script failed to load'
@@ -1778,6 +1794,7 @@ class EditorBootstrap:
                         _py_path = adb.get_path_from_guid(_py_guid)
                         if _py_path:
                             _script_err = get_script_error_by_path(_py_path)
+                _record_profile_timing("bodyPyCheck", (_time.perf_counter() - _py_check_t0) * 1000.0)
                 if _script_err:
                     from Infernux.engine.ui.theme import Theme, ImGuiCol
                     ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
@@ -1785,7 +1802,10 @@ class EditorBootstrap:
                     ctx.pop_style_color(1)
                 else:
                     from Infernux.engine.ui.inspector_components import render_py_component
+                    _record_profile_count("bodyPyDispatch_count")
+                    _py_render_t0 = _time.perf_counter()
                     render_py_component(ctx, comp)
+                    _record_profile_timing("bodyPyDispatch", (_time.perf_counter() - _py_render_t0) * 1000.0)
                 return
 
         ip.render_component_body = _render_component_body
@@ -1875,6 +1895,7 @@ class EditorBootstrap:
                     f"Toggle {getattr(comp, 'type_name', '?')}"))
             else:
                 comp.enabled = new_enabled
+                _bump_inspector_values()
             for item in _component_cache["items"]:
                 if item.component_id == comp_id:
                     item.enabled = bool(new_enabled)
@@ -1962,6 +1983,7 @@ class EditorBootstrap:
                     _record_add_component_compound(
                         obj, type_name_or_path, result, before_ids, is_py=False)
                     _invalidate_component_cache()
+                    _bump_inspector_values()
                 else:
                     Debug.log_error(f"Failed to add component: {type_name_or_path}")
             else:
@@ -1992,6 +2014,7 @@ class EditorBootstrap:
                     _record_add_component_compound(
                         obj, comp_cls.__name__, instance, before_ids, is_py=True)
                     _invalidate_component_cache()
+                    _bump_inspector_values()
                     Debug.log_internal(f"Added component {comp_cls.__name__}")
                 else:
                     from Infernux.components import load_and_create_component
@@ -2011,6 +2034,7 @@ class EditorBootstrap:
                         obj, component_instance.type_name,
                         component_instance, before_ids, is_py=True)
                     _invalidate_component_cache()
+                    _bump_inspector_values()
                     Debug.log_internal(f"Added component {component_instance.type_name}")
 
         ip.add_component = _add_component
@@ -2032,20 +2056,24 @@ class EditorBootstrap:
                     if mgr:
                         mgr.execute(RemoveNativeComponentCommand(obj.id, type_name, comp))
                         _invalidate_component_cache()
+                        _bump_inspector_values()
                         return True
                     ok = obj.remove_component(comp) is not False
                     if ok:
                         _invalidate_component_cache()
+                        _bump_inspector_values()
                     return ok
                 else:
                     from Infernux.engine.undo import RemovePyComponentCommand
                     if mgr:
                         mgr.execute(RemovePyComponentCommand(obj.id, comp))
                         _invalidate_component_cache()
+                        _bump_inspector_values()
                         return True
                     ok = obj.remove_py_component(comp) is not False
                     if ok:
                         _invalidate_component_cache()
+                        _bump_inspector_values()
                     return ok
             return False
 
@@ -2312,6 +2340,7 @@ class EditorBootstrap:
             _record_add_component_compound(
                 obj, instance.type_name, instance, before_ids, is_py=True)
             _invalidate_component_cache()
+            _bump_inspector_values()
 
         ip.handle_script_drop = _handle_script_drop
 

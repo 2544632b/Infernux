@@ -210,6 +210,15 @@ def _bump_inspector_structure():
         pass
 
 
+def _bump_inspector_values():
+    """Bump the coarse Inspector value generation after editor mutations."""
+    try:
+        from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
+        bump_inspector_value_generation()
+    except ImportError:
+        pass
+
+
 def _notify_gizmos_scene_changed():
     from Infernux.gizmos.collector import notify_scene_changed
     notify_scene_changed()
@@ -1302,6 +1311,7 @@ class UndoManager:
         if not self._enabled:
             try:
                 cmd.execute()
+                _bump_inspector_values()
             except Exception as exc:
                 Debug.log_exception(exc)
             return
@@ -1315,6 +1325,7 @@ class UndoManager:
             self._debug_dump_stack("execute-failed")
             return
         self._is_executing = False
+        _bump_inspector_values()
 
         if self._suppress_property_recording and cmd._is_property_edit:
             return
@@ -1328,6 +1339,7 @@ class UndoManager:
         if self._suppress_property_recording and cmd._is_property_edit:
             return
         self._push(cmd)
+        _bump_inspector_values()
 
     def undo(self) -> None:
         """Undo the most recent command (exception-safe)."""
@@ -1347,6 +1359,7 @@ class UndoManager:
             self._debug_dump_stack("undo-failed")
             return
         self._is_executing = False
+        _bump_inspector_values()
 
         if cmd.supports_redo:
             self._redo_stack.append(cmd)
@@ -1373,6 +1386,7 @@ class UndoManager:
             self._debug_dump_stack("redo-failed")
             return
         self._is_executing = False
+        _bump_inspector_values()
 
         self._undo_stack.append(cmd)
 

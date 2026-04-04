@@ -63,6 +63,7 @@ class InspectorPanel : public EditorPanel
 
     std::function<bool()> isMultiSelection;
     std::function<std::vector<uint64_t>()> getSelectedIds;
+    std::function<uint64_t()> getValueGeneration;
 
     // ── Object info callbacks ────────────────────────────────────────
 
@@ -104,6 +105,9 @@ class InspectorPanel : public EditorPanel
     /// Render a component body (everything under the header).
     /// Parameters: (ctx, objId, typeName, componentId, isNative)
     std::function<void(InxGUIContext *, uint64_t, const std::string &, uint64_t, bool)> renderComponentBody;
+
+    /// Return and reset Python-side component body profile metrics.
+    std::function<std::unordered_map<std::string, double>()> consumeComponentBodyProfile;
 
     /// Render a component right-click context menu.
     /// Returns true if an action consumed the frame (caller should bail).
@@ -223,6 +227,11 @@ class InspectorPanel : public EditorPanel
     uint64_t m_cachedObjInfoId = 0;
     ObjectInfo m_cachedObjInfo;
     PrefabInfo m_cachedPrefabInfo;
+    uint64_t m_cachedComponentListObjId = 0;
+    std::vector<ComponentInfo> m_cachedComponents;
+    uint64_t m_cachedValueGeneration = 0;
+    float m_cachedValueRefreshTime = 0.0f;
+    static constexpr float VALUE_CACHE_TTL = 0.20f;
 
     // ── Cached icon IDs ──────────────────────────────────────────────
     uint64_t m_cachedTransformIconId = 0;
