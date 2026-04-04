@@ -77,6 +77,7 @@ class PlayerBootstrap:
 
     def run(self):
         """Execute all bootstrap phases and start the main loop."""
+        self._ensure_project_requirements()
         self._precompile_jit()
         self._init_engine()
         self._load_tag_layer_settings()
@@ -86,12 +87,19 @@ class PlayerBootstrap:
         self._load_initial_scene()
         self._enter_play_mode()
 
+    def _ensure_project_requirements(self):
+        try:
+            from Infernux.engine.project_requirements import ensure_project_requirements
+
+            ensure_project_requirements(self.project_path, auto_install=False)
+        except ImportError:
+            pass
+
     @staticmethod
     def _precompile_jit():
         try:
-            from Infernux.jit import ensure_jit_runtime, precompile_jit
+            from Infernux.jit import precompile_jit
 
-            ensure_jit_runtime(auto_install=False)
             precompile_jit()
         except ImportError:
             pass

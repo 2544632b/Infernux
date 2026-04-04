@@ -1506,6 +1506,10 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             break;
         }
         } // switch
+
+        // Tooltip for the last rendered widget (label hover is not tracked).
+        if (!d.tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", d.tooltip.c_str());
     }
     return changes;
 }

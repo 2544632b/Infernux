@@ -906,4 +906,8 @@ def build_scalar_desc(
     if space_before > 0:
         desc["spc"] = space_before
 
+    # --- Tooltip ---
+    if metadata.tooltip:
+        desc["tt"] = metadata.tooltip
+
     return desc

@@ -126,8 +126,12 @@ def ensure_jit_runtime(*, auto_install: bool = True) -> bool:
 
 
 def precompile_jit() -> None:
-    """Compile and cache built-in JIT kernels ahead of time."""
-    ensure_jit_runtime(auto_install=False)
+    """Compile and cache built-in JIT kernels ahead of time.
+
+    The generic project-requirements phase (``ensure_project_requirements``)
+    already handles numba installation, so we no longer call
+    ``ensure_jit_runtime`` here — just trigger the AOT warm-up.
+    """
     precompile()
 
 

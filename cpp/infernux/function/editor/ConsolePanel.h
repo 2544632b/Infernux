@@ -42,6 +42,9 @@ class ConsolePanel : public EditorPanel
     /// Called from status bar click.
     void SelectLatestEntry();
 
+    /// Python callback: invoked on double-click with (sourceFile, sourceLine).
+    std::function<void(const std::string &, int)> onDoubleClickEntry;
+
     /// Filter state — exposed for pybind11 property access.
     bool showInfo = true;
     bool showWarnings = true;

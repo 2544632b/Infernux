@@ -226,6 +226,11 @@ void ConsolePanel::EnsureCache()
     m_cachedWarnCount = wc;
     m_cachedErrorCount = ec;
 
+    // Remember selected entry UID so we can restore selection after rebuild
+    uint64_t selectedUid = 0;
+    if (m_selectedIndex >= 0 && m_selectedIndex < static_cast<int>(m_visible.size()))
+        selectedUid = m_visible[m_selectedIndex].uid;
+
     // Rebuild visible list
     m_visible.clear();
     // collapse_map: key = (level, message) → index in m_visible
@@ -262,6 +267,20 @@ void ConsolePanel::EnsureCache()
         ve.count = 1;
         ve.uid = log.uid;
         m_visible.push_back(ve);
+    }
+
+    // Restore selection by UID — prevents click/refresh race
+    if (selectedUid > 0)
+    {
+        m_selectedIndex = -1;
+        for (int idx = 0; idx < static_cast<int>(m_visible.size()); ++idx)
+        {
+            if (m_visible[idx].uid == selectedUid)
+            {
+                m_selectedIndex = idx;
+                break;
+            }
+        }
     }
 
     m_cacheDirty = false;
@@ -538,9 +557,15 @@ void ConsolePanel::RenderRow(int visIdx, const VisibleEntry &ve)
     snprintf(label, sizeof(label), "%s##clog_%llu_%d", log.firstLine.c_str(),
              static_cast<unsigned long long>(ve.uid), visIdx);
 
-    if (ImGui::Selectable(label, isSel, ImGuiSelectableFlags_SpanAllColumns))
+    if (ImGui::Selectable(label, isSel, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
     {
         m_selectedIndex = visIdx;
+        // Double-click: navigate to source
+        if (ImGui::IsMouseDoubleClicked(0) && onDoubleClickEntry &&
+            !log.sourceFile.empty())
+        {
+            onDoubleClickEntry(log.sourceFile, log.sourceLine);
+        }
     }
 
     // Collapse count badge

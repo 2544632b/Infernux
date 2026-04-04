@@ -42,8 +42,9 @@ struct PropertyDesc
     bool slider = false;
     bool multiline = false;
     std::vector<std::string> enumNames;
-    std::string header; // Section header text above this field (empty = none)
-    float space = 0;    // Vertical padding before this field
+    std::string header;  // Section header text above this field (empty = none)
+    float space = 0;     // Vertical padding before this field
+    std::string tooltip; // Hover tooltip for the field label (empty = none)
 };
 
 struct PropertyChange

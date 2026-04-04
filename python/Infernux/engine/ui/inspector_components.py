@@ -1714,6 +1714,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                     enum_members = _get_enum_members(enum_cls)
             batch_descs.append(desc)
             batch_info.append((field_name, metadata, current_value, enum_members))
+            # Tooltip for batched fields is handled by C++ RenderPropertyBatch.
         else:
             # Non-batchable scalar fallback
             _flush()
@@ -1732,9 +1733,9 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 _invalidate_component_value_cache(cache_entry)
                 refresh_values = True
 
-        # Show tooltip if available
-        if metadata.tooltip and ctx.is_item_hovered():
-            ctx.set_tooltip(metadata.tooltip)
+            # Tooltip for non-batched scalar fallback
+            if metadata.tooltip and ctx.is_item_hovered():
+                ctx.set_tooltip(metadata.tooltip)
 
         # Show info text if available
         if metadata.info_text:

@@ -129,18 +129,39 @@ def _resolve_builder_python() -> str:
 
 
 def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
+    import time as _time
     missing_packages: list[str] = []
-    for module_name in module_names:
-        completed = _run_python(
-            python_exe,
-            ["-c", f"import importlib.util; print(int(importlib.util.find_spec('{module_name}') is not None))"],
-            timeout=20,
-        )
-        if completed.returncode == 0 and (completed.stdout or "").strip() == "1":
-            continue
-        package_name = _AUTO_INSTALLABLE_PACKAGES.get(module_name)
-        if package_name and package_name not in missing_packages:
-            missing_packages.append(package_name)
+    _check_t0 = _time.perf_counter()
+
+    # Check all modules in a single subprocess instead of one per module.
+    check_script = (
+        "import importlib.util, sys; "
+        "mods = sys.argv[1:]; "
+        "print(','.join(str(int(importlib.util.find_spec(m) is not None)) for m in mods))"
+    )
+    completed = _run_python(
+        python_exe,
+        ["-c", check_script, *module_names],
+        timeout=30,
+    )
+    if completed.returncode == 0 and (completed.stdout or "").strip():
+        results = (completed.stdout or "").strip().split(",")
+        for module_name, available in zip(module_names, results):
+            if available.strip() != "1":
+                package_name = _AUTO_INSTALLABLE_PACKAGES.get(module_name)
+                if package_name and package_name not in missing_packages:
+                    missing_packages.append(package_name)
+    else:
+        # Fallback: treat all as potentially missing
+        for module_name in module_names:
+            package_name = _AUTO_INSTALLABLE_PACKAGES.get(module_name)
+            if package_name and package_name not in missing_packages:
+                missing_packages.append(package_name)
+
+    Debug.log_internal(
+        f"  package availability check for {len(module_names)} modules in "
+        f"{_time.perf_counter() - _check_t0:.2f}s"
+    )
 
     if not missing_packages:
         return
@@ -149,8 +170,12 @@ def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
         "Missing build packages detected — installing automatically: "
         + ", ".join(missing_packages)
     )
+    _pip_t0 = _time.perf_counter()
     subprocess.check_call(
         [python_exe, "-m", "pip", "install", *missing_packages, "--quiet"],
+    )
+    Debug.log_internal(
+        f"  pip install completed in {_time.perf_counter() - _pip_t0:.2f}s"
     )
 
 
@@ -222,13 +247,23 @@ class NuitkaBuilder:
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Run Nuitka compilation.  Returns the dist directory path."""
+        import time as _time
+        _build_t0 = _time.perf_counter()
+        _stage_t0 = _build_t0
 
         def _p(msg: str, pct: float):
+            nonlocal _stage_t0
             if cancel_event is not None and cancel_event.is_set():
                 raise _BuildCancelled()
+            now = _time.perf_counter()
+            elapsed = now - _stage_t0
+            _stage_t0 = now
             if on_progress:
                 on_progress(msg, pct)
-            Debug.log_internal(f"[NuitkaBuilder {pct:.0%}] {msg}")
+            Debug.log_internal(
+                f"[NuitkaBuilder {pct:.0%}] {msg}  (prev {elapsed:.2f}s, "
+                f"nuitka total {now - _build_t0:.1f}s)"
+            )
 
         _p("检查 Nuitka 可用性 Checking Nuitka...", 0.0)
         self._check_nuitka()
@@ -265,16 +300,25 @@ class NuitkaBuilder:
 
     def _check_nuitka(self):
         """Ensure Nuitka and build-time project dependencies are installed."""
+        import time as _time
         try:
+            _t0 = _time.perf_counter()
             _ensure_python_packages(
                 self._builder_python,
                 "nuitka",
                 "ordered_set",
                 *self.extra_include_packages,
             )
+            Debug.log_internal(
+                f"  _ensure_python_packages in {_time.perf_counter() - _t0:.2f}s"
+            )
+            _t1 = _time.perf_counter()
             _install_requirements_files(
                 self._builder_python,
                 self.extra_requirements_files,
+            )
+            Debug.log_internal(
+                f"  _install_requirements_files in {_time.perf_counter() - _t1:.2f}s"
             )
         except Exception as exc:
             raise RuntimeError(
@@ -454,6 +498,8 @@ class NuitkaBuilder:
         if pythonpath_entries:
             env["PYTHONPATH"] = os.pathsep.join(_dedupe_paths(pythonpath_entries))
 
+        import time as _time
+        _nuitka_proc_t0 = _time.perf_counter()
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -482,6 +528,11 @@ class NuitkaBuilder:
             raise
 
         proc.wait()
+        _nuitka_elapsed = _time.perf_counter() - _nuitka_proc_t0
+        Debug.log_internal(
+            f"  Nuitka subprocess finished in {_nuitka_elapsed:.1f}s  "
+            f"({len(lines_collected)} output lines, exit {proc.returncode})"
+        )
 
         if proc.returncode != 0:
             tail = "\n".join(lines_collected[-30:])
@@ -513,6 +564,8 @@ class NuitkaBuilder:
         can find the .pyd, and ``os.add_dll_directory(lib_dir)`` picks
         up the companion DLLs.
         """
+        import time as _time
+        _inject_t0 = _time.perf_counter()
         import Infernux.lib as _lib
         lib_dir = Path(_lib.__file__).parent
 
@@ -544,6 +597,11 @@ class NuitkaBuilder:
                 if not dst_root.exists():
                     shutil.copy2(src, dst_root)
                     Debug.log_internal(f"  Injected (root): {src.name}")
+
+        Debug.log_internal(
+            f"  native lib injection total: {_time.perf_counter() - _inject_t0:.2f}s  "
+            f"({len(native_files)} files)"
+        )
 
     # ------------------------------------------------------------------
     # UTF-8 application manifest (Windows)
@@ -757,18 +815,40 @@ if ($result.StatusMessage) {
     # ------------------------------------------------------------------
 
     def _cleanup_build_artifacts(self):
-        """Remove Nuitka's intermediate .build directory from staging."""
+        """Remove Nuitka's intermediate .build directory from staging.
+
+        Deletion runs in a background daemon thread so the caller doesn't
+        block.  On Windows we use ``rd /s /q`` which is dramatically faster
+        than Python's shutil.rmtree (native NTFS batch-delete vs per-file
+        unlink syscalls).
+        """
+        dirs_to_remove: list[str] = []
         build_dir = os.path.join(self._staging_dir, "boot.build")
         if os.path.isdir(build_dir):
-            shutil.rmtree(build_dir, ignore_errors=True)
-        # Also remove the staging temp dir
+            dirs_to_remove.append(build_dir)
         safe_tmp = os.path.join(self._staging_dir, "_tmp")
         if os.path.isdir(safe_tmp):
-            shutil.rmtree(safe_tmp, ignore_errors=True)
-        # Remove the copied boot script
+            dirs_to_remove.append(safe_tmp)
+        # Remove the copied boot script (tiny file, do it synchronously)
         staged_script = os.path.join(self._staging_dir, "boot.py")
         if os.path.isfile(staged_script):
             os.remove(staged_script)
+
+        if dirs_to_remove:
+            def _bg_remove(paths: list[str]):
+                for p in paths:
+                    if sys.platform == "win32":
+                        # rd /s /q is 5-10x faster than shutil.rmtree on NTFS
+                        subprocess.run(
+                            ["cmd", "/c", "rd", "/s", "/q", p],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    else:
+                        shutil.rmtree(p, ignore_errors=True)
+
+            t = threading.Thread(target=_bg_remove, args=(dirs_to_remove,), daemon=True)
+            t.start()
 
     # ------------------------------------------------------------------
     # Icon conversion
@@ -786,7 +866,7 @@ if ($result.StatusMessage) {
             return icon_path
 
         try:
-            _ensure_python_packages("PIL")
+            _ensure_python_packages(self._builder_python, "PIL")
             from PIL import Image
         except ImportError:
             Debug.log_warning(

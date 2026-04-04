@@ -118,6 +118,8 @@ PropertyDesc DecodePropertyDesc(const py::dict &d)
         p.header = d["hdr"].cast<std::string>();
     if (d.contains("spc"))
         p.space = d["spc"].cast<float>();
+    if (d.contains("tt"))
+        p.tooltip = d["tt"].cast<std::string>();
     return p;
 }
 
@@ -725,7 +727,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("collapse", &ConsolePanel::collapse)
         .def_readwrite("clear_on_play", &ConsolePanel::clearOnPlay)
         .def_readwrite("error_pause", &ConsolePanel::errorPause)
-        .def_readwrite("auto_scroll", &ConsolePanel::autoScroll);
+        .def_readwrite("auto_scroll", &ConsolePanel::autoScroll)
+        .def_readwrite("on_double_click_entry", &ConsolePanel::onDoubleClickEntry);
 
     // ── PlayState enum ─────────────────────────────────────────────────
     py::enum_<PlayState>(m, "PlayState")

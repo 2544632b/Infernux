@@ -965,7 +965,11 @@ class BuildSettingsPanel:
             except BuildOutputDirectoryError as exc:
                 self._show_output_directory_error(exc)
             except Exception as exc:
-                self._build_error = str(exc)
+                log_path = os.path.join(builder.project_path, "Logs", "build.log")
+                if os.path.isfile(log_path):
+                    self._build_error = f"{exc}\n\nSee: {log_path}"
+                else:
+                    self._build_error = str(exc)
             finally:
                 self._building = False
 

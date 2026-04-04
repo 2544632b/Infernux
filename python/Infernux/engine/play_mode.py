@@ -272,8 +272,9 @@ class PlayModeManager:
             return False
 
         # ── Step functions (closures capture self) ───────────────────
-        def step_save():
-            """Serialize scene + clear undo + init timing."""
+        def step_enter():
+            """Save scene, rebuild from snapshot, and activate play — all in one frame."""
+            # 1. Serialize scene + clear undo + init timing
             self._save_scene_state()
             from Infernux.engine.undo import UndoManager
             _undo = UndoManager.instance()
@@ -290,8 +291,7 @@ class PlayModeManager:
             from Infernux.components.builtin_component import BuiltinComponent
             BuiltinComponent._clear_cache()
 
-        def step_rebuild():
-            """Rebuild scene from snapshot."""
+            # 2. Rebuild scene from snapshot
             if not self._rebuild_active_scene(self._scene_backup, for_play=True):
                 Debug.log_error("Failed to rebuild runtime scene for Play Mode")
                 self._state = PlayModeState.EDIT
@@ -302,11 +302,9 @@ class PlayModeManager:
                 self._notify_state_change(PlayModeState.EDIT, PlayModeState.EDIT)
                 return False
 
-        def step_activate():
-            """Transition state and enter C++ play mode."""
+            # 3. Transition state and enter C++ play mode
             old_state = self._state
             self._state = PlayModeState.PLAYING
-            # Suppress material auto-save: runtime changes are transient.
             try:
                 from Infernux.core.material import Material
                 Material._suppress_auto_save = True
@@ -326,9 +324,7 @@ class PlayModeManager:
                 EngineStatus.flash("启动失败 Play Failed", 0.0, duration=2.0)
 
         runner.submit("Enter Play Mode", [
-            ("保存场景 Saving scene...",   0.15, step_save),
-            ("重建场景 Rebuilding scene...", 0.5,  step_rebuild),
-            ("启动游戏 Activating play...",  0.85, step_activate),
+            ("启动运行模式 Entering play mode...", 0.5, step_enter),
         ], on_done=on_done)
         return True
     
@@ -388,10 +384,11 @@ class PlayModeManager:
         from Infernux.components.builtin_component import BuiltinComponent
         BuiltinComponent._clear_cache()
 
-        # ── Deferred steps (one per frame for responsiveness) ────────
+        # ── Deferred step (single frame to avoid flicker) ─────────
 
-        def step_restore_scene():
-            """Deserialize backup snapshot and recreate Python components."""
+        def step_exit():
+            """Restore scene from backup and finalize — all in one frame."""
+            # 1. Deserialize backup snapshot and recreate Python components
             restore_ok = self._rebuild_active_scene(
                 self._scene_backup, for_play=False, restore_scene_path=True
             )
@@ -401,8 +398,7 @@ class PlayModeManager:
                     "— editor may be in a degraded state"
                 )
 
-        def step_finalize():
-            """Clear undo and notify listeners."""
+            # 2. Clear undo and notify listeners
             from Infernux.engine.undo import UndoManager
             _undo = UndoManager.instance()
             if _undo:
@@ -417,7 +413,6 @@ class PlayModeManager:
                     else:
                         sfm.clear_dirty()
             self._notify_state_change(old_state, PlayModeState.EDIT)
-            # Debug.log_internal("[OK] Returned to Edit Mode (scene restored)")
 
         def on_done(ok):
             from Infernux.engine.ui.engine_status import EngineStatus
@@ -432,8 +427,7 @@ class PlayModeManager:
                     Debug.log_error(f"exit_play_mode on_complete callback failed: {exc}")
 
         runner.submit("Exit Play Mode", [
-            ("恢复场景 Restoring scene...", 0.3, step_restore_scene),
-            ("完成恢复 Finalizing...",      0.8, step_finalize),
+            ("恢复编辑模式 Restoring edit mode...", 0.5, step_exit),
         ], on_done=on_done)
         return True
     

@@ -124,6 +124,15 @@ class ProjectModel:
         with open(readme_path, "w") as f:
             f.write("# Project Assets\n\nThis folder contains all the assets for the project.\n")
 
+        # Create default project requirements
+        from Infernux.engine.project_requirements import _bundled_requirements_path
+        req_path = os.path.join(project_dir, "ProjectSettings", "requirements.txt")
+        if not os.path.isfile(req_path):
+            bundled = _bundled_requirements_path()
+            if os.path.isfile(bundled):
+                import shutil as _shutil
+                _shutil.copy2(bundled, req_path)
+
         # Create .ini file in project path
         ini_path = os.path.join(project_dir, f"{project_name}.ini")
         now = datetime.datetime.now()

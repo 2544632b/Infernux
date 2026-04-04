@@ -143,13 +143,59 @@ class GameBuilder:
         """Run the full build pipeline.  Returns the final output directory."""
 
         build_start = time.perf_counter()
+        _stage_t0 = build_start
+
+        # ── Build log file ────────────────────────────────────────────
+        log_dir = os.path.join(self.project_path, "Logs")
+        os.makedirs(log_dir, exist_ok=True)
+        build_log_path = os.path.join(log_dir, "build.log")
+        build_log = open(build_log_path, "w", encoding="utf-8")
+
+        def _blog(msg: str):
+            """Write to both the engine console and the build log file."""
+            try:
+                build_log.write(msg + "\n")
+                build_log.flush()
+            except OSError:
+                pass
 
         def _p(msg: str, pct: float):
+            nonlocal _stage_t0
             if cancel_event is not None and cancel_event.is_set():
                 raise _BuildCancelled()
+            now = time.perf_counter()
+            elapsed = now - _stage_t0
+            _stage_t0 = now
             if on_progress:
                 on_progress(msg, pct)
-            Debug.log_internal(f"[Build {pct:.0%}] {msg}")
+            log_msg = (
+                f"[Build {pct:.0%}] {msg}  (prev stage {elapsed:.2f}s, "
+                f"total {now - build_start:.1f}s)"
+            )
+            Debug.log_internal(log_msg)
+            _blog(log_msg)
+
+        try:
+            return self._build_inner(_p, _blog, on_progress, cancel_event, build_start)
+        except _BuildCancelled:
+            _blog("Build cancelled by user.")
+            raise
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            _blog(f"BUILD FAILED: {tb}")
+            Debug.log_error(
+                f"Build failed — see {build_log_path} for details.\n{exc}"
+            )
+            raise
+        finally:
+            try:
+                build_log.close()
+            except OSError:
+                pass
+
+    def _build_inner(self, _p, _blog, on_progress, cancel_event, build_start) -> str:
+        """Internal build pipeline (separated for clean exception handling)."""
 
         _p("验证项目 Validating project...", 0.00)
         self._validate()
@@ -195,12 +241,12 @@ class GameBuilder:
 
         _p("构建完成 Build complete!", 1.0)
         elapsed_seconds = time.perf_counter() - build_start
-        Debug.log(
-            t("build.completed_log").format(
-                path=final_dir,
-                seconds=elapsed_seconds,
-            )
+        done_msg = t("build.completed_log").format(
+            path=final_dir,
+            seconds=elapsed_seconds,
         )
+        Debug.log(done_msg)
+        _blog(done_msg)
         return final_dir
 
     # ------------------------------------------------------------------
@@ -457,7 +503,10 @@ except Exception as _exc:
         final_dir = self.output_dir
         os.makedirs(final_dir, exist_ok=True)
 
+        _move_t0 = time.perf_counter()
+        _item_count = 0
         for item in os.listdir(dist_dir):
+            _item_count += 1
             src = os.path.join(dist_dir, item)
             dst = os.path.join(final_dir, item)
             if os.path.exists(dst):
@@ -466,6 +515,10 @@ except Exception as _exc:
                 else:
                     os.remove(dst)
             shutil.move(src, dst)
+        Debug.log_internal(
+            f"  moved {_item_count} items from staging in "
+            f"{time.perf_counter() - _move_t0:.2f}s"
+        )
 
         # Remove the now-empty dist directory and its staging parent
         staging_parent = os.path.dirname(dist_dir)
@@ -485,7 +538,11 @@ except Exception as _exc:
             src = os.path.join(self.project_path, dirname)
             dst = os.path.join(data_dir, dirname)
             if os.path.isdir(src):
+                _t0 = time.perf_counter()
                 shutil.copytree(src, dst, ignore=ignore)
+                Debug.log_internal(
+                    f"  copied {dirname}/ in {time.perf_counter() - _t0:.2f}s"
+                )
 
     # ------------------------------------------------------------------
     # Collect user script dependencies
@@ -544,6 +601,7 @@ except Exception as _exc:
 
         found: set[str] = set()
         uses_infernux_jit = False
+        _t0 = time.perf_counter()
 
         # --- Source 1: project requirements.txt -------------------------
         req_path = os.path.join(self.project_path, "requirements.txt")
@@ -558,8 +616,13 @@ except Exception as _exc:
                     pkg = re.split(r"[><=!;\[]", line, maxsplit=1)[0].strip()
                     if pkg:
                         found.add(pkg)
+        Debug.log_internal(
+            f"  requirements.txt parsed in {time.perf_counter() - _t0:.3f}s"
+        )
 
         # --- Source 2: AST import scanning ------------------------------
+        _ast_t0 = time.perf_counter()
+        _ast_file_count = 0
         assets_dir = os.path.join(self.project_path, "Assets")
         if os.path.isdir(assets_dir):
             for root, _, files in os.walk(assets_dir):
@@ -567,6 +630,7 @@ except Exception as _exc:
                     if not fname.endswith(".py"):
                         continue
                     fpath = os.path.join(root, fname)
+                    _ast_file_count += 1
                     try:
                         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                             tree = ast.parse(f.read(), filename=fpath)
@@ -587,6 +651,10 @@ except Exception as _exc:
                                     imported_names = {alias.name for alias in node.names}
                                     if imported_names & {"jit", "njit", "precompile", "precompile_jit", "JIT_AVAILABLE"}:
                                         uses_infernux_jit = True
+        Debug.log_internal(
+            f"  AST scanned {_ast_file_count} .py files in "
+            f"{time.perf_counter() - _ast_t0:.3f}s"
+        )
 
         # --- Filter: remove stdlib / engine / excluded ------------------
         found -= self._BUILTIN_MODULES
@@ -602,6 +670,7 @@ except Exception as _exc:
 
         # Only keep packages that are actually importable in the current
         # environment so Nuitka doesn't error on stale or optional imports.
+        _verify_t0 = time.perf_counter()
         verified: list[str] = []
         for pkg in sorted(found):
             if importlib.util.find_spec(pkg) is not None:
@@ -610,6 +679,9 @@ except Exception as _exc:
                 Debug.log_warning(
                     f"User script dependency '{pkg}' not installed — skipping"
                 )
+        Debug.log_internal(
+            f"  import verification in {time.perf_counter() - _verify_t0:.3f}s"
+        )
 
         if verified:
             Debug.log_internal(
@@ -632,6 +704,8 @@ except Exception as _exc:
         if not os.path.isdir(assets_dir):
             return
 
+        _compile_t0 = time.perf_counter()
+        _compile_count = 0
         data_dir = os.path.join(final_dir, "Data")
         guid_map: dict[str, str] = {}
 
@@ -661,6 +735,7 @@ except Exception as _exc:
             for fname in files:
                 if fname.endswith(".py"):
                     py_path = os.path.join(root, fname)
+                    _compile_count += 1
                     try:
                         py_compile.compile(
                             py_path,
@@ -671,6 +746,11 @@ except Exception as _exc:
                         os.remove(py_path)
                     except py_compile.PyCompileError:
                         pass
+
+        Debug.log_internal(
+            f"  compiled {_compile_count} scripts in "
+            f"{time.perf_counter() - _compile_t0:.2f}s"
+        )
 
         # Write manifest
         if guid_map:
@@ -712,43 +792,11 @@ except Exception as _exc:
 
     def _extract_video_frames(self, video_path: str, output_path: str):
         """Extract video frames to .infsplash binary blob."""
-        try:
-            import cv2
-        except ImportError:
-            try:
-                _ensure_video_splash_packages()
-                self._extract_with_imageio(video_path, output_path)
-                return
-            except ImportError:
-                raise RuntimeError(
-                    "Video splash requires opencv-python or imageio+av. "
-                    "Install: pip install opencv-python-headless  or  pip install imageio av"
-                )
-
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open video: {video_path}")
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        frames_data: list[bytes] = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            _, jpeg_buf = cv2.imencode(
-                ".jpg", frame_rgb, [cv2.IMWRITE_JPEG_QUALITY, 85]
-            )
-            frames_data.append(jpeg_buf.tobytes())
-        cap.release()
-
-        self._write_infsplash(output_path, frames_data, fps, width, height)
+        _ensure_video_splash_packages()
+        self._extract_with_imageio(video_path, output_path)
 
     def _extract_with_imageio(self, video_path: str, output_path: str):
-        """Fallback using imageio for video frame extraction."""
+        """Extract video frames using imageio+av."""
         import imageio.v3 as iio
 
         frames_data: list[bytes] = []

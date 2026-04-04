@@ -39,7 +39,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 5
-_TOTAL_PHASES = 12
+_TOTAL_PHASES = 13
 
 
 def _signal_progress(phase: int, total: int, message: str) -> None:
@@ -96,6 +96,9 @@ class EditorBootstrap:
 
     def run(self):
         """Execute all bootstrap phases and start the main loop."""
+        self._report_progress("Checking project requirements\u2026")
+        self._ensure_project_requirements()
+
         self._report_progress("Compiling JIT kernels\u2026")
         self._precompile_jit()
 
@@ -135,11 +138,15 @@ class EditorBootstrap:
         _signal_progress(self._phase, _TOTAL_PHASES, message)
 
 
+    def _ensure_project_requirements(self):
+        from Infernux.engine.project_requirements import ensure_project_requirements
+
+        ensure_project_requirements(self.project_path, auto_install=True)
+
     @staticmethod
     def _precompile_jit():
-        from Infernux.jit import ensure_jit_runtime, precompile_jit
+        from Infernux.jit import precompile_jit
 
-        ensure_jit_runtime(auto_install=True)
         precompile_jit()
 
 
@@ -278,7 +285,16 @@ class EditorBootstrap:
     def _create_native_console(self):
         """Create a fresh C++ ConsolePanel for WindowManager re-open."""
         from Infernux.lib import ConsolePanel as NativeConsolePanel
-        return NativeConsolePanel()
+        panel = NativeConsolePanel()
+        _project_path = self.project_path
+        def _on_dbl(source_file, source_line):
+            if not source_file:
+                return
+            from Infernux.engine.ui import project_utils
+            project_utils.open_file_with_system(
+                source_file, project_root=_project_path)
+        panel.on_double_click_entry = _on_dbl
+        return panel
 
     def _create_native_hierarchy(self):
         """Create a fresh C++ HierarchyPanel with all callbacks wired."""
@@ -459,6 +475,16 @@ class EditorBootstrap:
                 if event.new_state == PlayModeState.PLAYING and _native_console.clear_on_play:
                     _native_console.clear()
             engine._play_mode_manager.add_state_change_listener(_on_play_clear)
+
+        # Wire console double-click → open source file
+        _console_project_path = self.project_path
+        def _on_console_double_click(source_file, source_line):
+            if not source_file:
+                return
+            from Infernux.engine.ui import project_utils
+            project_utils.open_file_with_system(
+                source_file, project_root=_console_project_path)
+        self.console.on_double_click_entry = _on_console_double_click
 
         # Status bar (C++ native panel — replaces Python StatusBarPanel)
         from Infernux.lib import StatusBarPanel as NativeStatusBarPanel
@@ -1812,10 +1838,111 @@ class EditorBootstrap:
 
         ip.render_component_body = _render_component_body
 
-        # ── Component context menu ─────────────────────────────────────
-        # We create a lightweight Python-side context menu manager since
-        # the C++ panel calls this callback after rendering the header.
-        _ctx_menu_state = {"right_click_enabled": True}
+        # ── Component clipboard & context menu ─────────────────────────
+        # Shared clipboard for Copy / Paste as New / Paste as Values.
+        _comp_clipboard = {
+            "type_name": "",
+            "is_native": True,
+            "script_guid": "",
+            "json": "",           # serialize() for native, _serialize_fields() for py
+        }
+
+        def _copy_component_to_clipboard(comp, type_name, is_native):
+            _comp_clipboard["type_name"] = type_name
+            _comp_clipboard["is_native"] = is_native
+            _comp_clipboard["script_guid"] = getattr(comp, '_script_guid', '') or ''
+            try:
+                if is_native and hasattr(comp, "serialize"):
+                    _comp_clipboard["json"] = comp.serialize()
+                elif hasattr(comp, "_serialize_fields"):
+                    _comp_clipboard["json"] = comp._serialize_fields()
+                else:
+                    _comp_clipboard["json"] = ""
+            except Exception:
+                _comp_clipboard["json"] = ""
+
+        def _has_comp_clipboard():
+            return bool(_comp_clipboard["type_name"] and _comp_clipboard["json"])
+
+        def _can_paste_values(comp, type_name, is_native):
+            """True when clipboard data can be applied to *comp*."""
+            if not _has_comp_clipboard():
+                return False
+            return (_comp_clipboard["type_name"] == type_name and
+                    _comp_clipboard["is_native"] == is_native)
+
+        def _paste_as_new_component(obj):
+            """Add a new component from clipboard data."""
+            from Infernux.engine.undo import UndoManager
+            tn = _comp_clipboard["type_name"]
+            native = _comp_clipboard["is_native"]
+            json_data = _comp_clipboard["json"]
+            guid = _comp_clipboard["script_guid"]
+            mgr = UndoManager.instance()
+            if native:
+                result = obj.add_component(tn)
+                if result and json_data and hasattr(result, "deserialize"):
+                    try:
+                        result.deserialize(json_data)
+                    except Exception:
+                        pass
+            else:
+                from Infernux.engine.component_restore import create_component_instance
+                from Infernux.engine.scene_manager import SceneFileManager
+                sfm = SceneFileManager.instance()
+                asset_db = sfm._asset_database if sfm else None
+                instance, _sp = create_component_instance(
+                    guid, tn, asset_database=asset_db)
+                if instance is None:
+                    from Infernux.debug import Debug
+                    Debug.log_warning(f"Cannot paste: failed to create '{tn}'")
+                    return
+                if json_data:
+                    try:
+                        instance._deserialize_fields(json_data, _skip_on_after_deserialize=True)
+                    except TypeError:
+                        instance._deserialize_fields(json_data)
+                    except Exception:
+                        pass
+                if guid:
+                    try:
+                        instance._script_guid = guid
+                    except Exception:
+                        pass
+                obj.add_py_component(instance)
+            _invalidate_component_cache()
+
+        def _paste_values_to_component(comp, is_native):
+            """Apply clipboard data to an existing component."""
+            json_data = _comp_clipboard["json"]
+            if not json_data:
+                return
+            from Infernux.engine.undo import UndoManager
+            if is_native and hasattr(comp, "deserialize"):
+                try:
+                    comp.deserialize(json_data)
+                except Exception:
+                    pass
+            elif hasattr(comp, "_deserialize_fields"):
+                try:
+                    comp._deserialize_fields(json_data, _skip_on_after_deserialize=True)
+                except TypeError:
+                    comp._deserialize_fields(json_data)
+                except Exception:
+                    pass
+            _bump_inspector_values()
+
+        def _get_script_path_for_component(comp):
+            """Return the file path for a Python script component, or ''."""
+            guid = getattr(comp, '_script_guid', None)
+            if not guid:
+                return ''
+            adb = engine.get_asset_database()
+            if adb:
+                path = adb.get_path_from_guid(guid)
+                if path:
+                    return path
+            return ''
 
         def _can_remove_component(obj, comp, type_name, is_native):
             if is_native:
@@ -1839,6 +1966,8 @@ class EditorBootstrap:
                     return False
             return True
 
+        _project_path = self.project_path
+
         def _render_component_context_menu(ctx, obj_id, type_name, comp_id, is_native):
             # C++ handles BeginPopupContextItem/EndPopup — render menu items only.
             # Return True if component was removed (C++ skips EndPopup in that case).
@@ -1849,11 +1978,54 @@ class EditorBootstrap:
             comp = _resolve_component(obj_id, comp_id, is_native)
             if comp is None:
                 return False
-            # Copy
+
+            # ── View Script (only for Python script components) ────────
+            if not is_native:
+                script_path = _get_script_path_for_component(comp)
+                if script_path:
+                    if ctx.selectable(_t("inspector.show_script")):
+                        from Infernux.engine.ui import project_utils
+                        project_utils.open_file_with_system(
+                            script_path, project_root=_project_path)
+                        ctx.close_current_popup()
+                        return False
+                    ctx.separator()
+
+            # ── Copy Properties ────────────────────────────────────────
             if ctx.selectable(_t("inspector.copy_properties")):
-                pass  # TODO: integrate clipboard
+                _copy_component_to_clipboard(comp, type_name, is_native)
+                ctx.close_current_popup()
+                return False
+
+            # ── Paste as New Component ─────────────────────────────────
+            has_clip = _has_comp_clipboard()
+            if not has_clip:
+                ctx.begin_disabled()
+            if ctx.selectable(_t("inspector.paste_as_new")):
+                _paste_as_new_component(obj)
+                ctx.close_current_popup()
+                if not has_clip:
+                    ctx.end_disabled()
+                return False
+            if not has_clip:
+                ctx.end_disabled()
+
+            # ── Paste as Values ────────────────────────────────────────
+            can_paste_vals = _can_paste_values(comp, type_name, is_native)
+            if not can_paste_vals:
+                ctx.begin_disabled()
+            if ctx.selectable(_t("inspector.paste_properties")):
+                _paste_values_to_component(comp, is_native)
+                ctx.close_current_popup()
+                if not can_paste_vals:
+                    ctx.end_disabled()
+                return False
+            if not can_paste_vals:
+                ctx.end_disabled()
+
             ctx.separator()
-            # Remove
+
+            # ── Remove ─────────────────────────────────────────────────
             if ctx.selectable(_t("inspector.remove")):
                 if not _can_remove_component(obj, comp, type_name, is_native):
                     return False
